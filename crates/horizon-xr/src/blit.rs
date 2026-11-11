@@ -245,10 +245,23 @@ fn fs_srgb(in: Out) -> @location(0) vec4<f32> {
 fn fs_unorm(in: Out) -> @location(0) vec4<f32> {
     return vec4<f32>(textureSample(frame, frame_sampler, in.uv).rgb, 1.0);
 }
+
+// The HUD's panel keeps its coverage, for the compositor to blend.
+@fragment
+fn fs_srgb_alpha(in: Out) -> @location(0) vec4<f32> {
+    let c = textureSample(frame, frame_sampler, in.uv);
+    return vec4<f32>(decode(c.rgb), c.a);
+}
+
+@fragment
+fn fs_unorm_alpha(in: Out) -> @location(0) vec4<f32> {
+    return textureSample(frame, frame_sampler, in.uv);
+}
 ";
 
 impl Blit {
-    pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
+    /// `alpha`: keep the frame's alpha (the HUD), else opaque.
+    pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat, alpha: bool) -> Self {
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Horizon VR blit"),
             source: wgpu::ShaderSource::Wgsl(SHADER.into()),
@@ -290,7 +303,12 @@ impl Blit {
             },
             fragment: Some(wgpu::FragmentState {
                 module: &module,
-                entry_point: Some(if format.is_srgb() { "fs_srgb" } else { "fs_unorm" }),
+                entry_point: Some(match (format.is_srgb(), alpha) {
+                    (true, false) => "fs_srgb",
+                    (false, false) => "fs_unorm",
+                    (true, true) => "fs_srgb_alpha",
+                    (false, true) => "fs_unorm_alpha",
+                }),
                 compilation_options: Default::default(),
                 targets: &[Some(format.into())],
             }),

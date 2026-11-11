@@ -385,6 +385,7 @@ impl super::Game<'_> {
     /// VR: the player looks where the head does (`horizon_xr::look`), through
     /// `Entity.turn` like the mouse, so everything that follows a turn still does.
     pub(super) fn xr_look(&mut self) {
+        horizon_xr::set_menu(self.title.is_some() || self.screen != super::Screen::Playing);
         let Some((yaw, pitch)) = horizon_xr::look(self.yaw) else {
             return;
         };

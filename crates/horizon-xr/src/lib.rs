@@ -34,6 +34,23 @@ const RESOLUTION_SCALE: f32 = 0.7;
 /// following it, in metres (the player's body does not move with it).
 const MAX_LEAN: f32 = 0.5;
 const VIEW_TYPE: xr::ViewConfigurationType = xr::ViewConfigurationType::PRIMARY_STEREO;
+/// Menus show on a panel this far in front of where the head faced when they opened, and
+/// this wide, in metres.
+const MENU_DISTANCE: f32 = 1.6;
+const MENU_WIDTH: f32 = 1.6;
+/// The HUD's panel, in front of the eyes, moving with the head.
+const HUD_DISTANCE: f32 = 1.2;
+const HUD_WIDTH: f32 = 1.3;
+
+/// What the flat panel shows this frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Panel {
+    /// A menu, a loading screen or the title screen: the whole frame, opaque, fixed in
+    /// the room. The eyes are not drawn.
+    Menu,
+    /// The HUD over the eyes' view, transparent where it draws nothing.
+    Hud,
+}
 
 /// The Touch controllers read as a gamepad.
 #[derive(Clone, Copy, Debug, Default)]
@@ -110,8 +127,16 @@ struct Session {
     running: bool,
     focused: bool,
     eyes: [blit::EyeChain; 2],
+    /// The panel for menus and the HUD (`Panel`), the eyes' size.
+    panel: blit::EyeChain,
+    panel_drawn: Option<Panel>,
+    /// Where the open menu's panel is, in LOCAL space; `None` while no menu is open.
+    menu_pose: Option<xr::Posef>,
+    /// The game has a menu (or the title screen) open (`set_menu`).
+    menu_open: bool,
     size: [u32; 2],
     blit: blit::Blit,
+    blit_alpha: blit::Blit,
     device: wgpu::Device,
     actions: Actions,
     pad: Pad,
@@ -523,6 +548,7 @@ fn start_session(xr: &Xr, device: &wgpu::Device, raw_device: vk::Device) -> Resu
         blit::EyeChain::new(&session, device, format, size)?,
         blit::EyeChain::new(&session, device, format, size)?,
     ];
+    let panel = blit::EyeChain::new(&session, device, format, size)?;
     Ok(Session {
         session,
         waiter,
@@ -533,8 +559,13 @@ fn start_session(xr: &Xr, device: &wgpu::Device, raw_device: vk::Device) -> Resu
         running: false,
         focused: false,
         eyes,
+        panel,
+        panel_drawn: None,
+        menu_pose: None,
+        menu_open: false,
         size,
-        blit: blit::Blit::new(device, format.1),
+        blit: blit::Blit::new(device, format.1, false),
+        blit_alpha: blit::Blit::new(device, format.1, true),
         device: device.clone(),
         actions,
         pad: Pad::default(),
@@ -617,8 +648,12 @@ pub fn begin_frame() -> Option<FrameViews> {
             ],
         }
     });
+    if s.menu_open && s.menu_pose.is_none() {
+        s.menu_pose = Some(menu_pose(head_rotation, head_position));
+    }
     s.pending = Some((state, views));
     s.eye_drawn = [false; 2];
+    s.panel_drawn = None;
     Some(FrameViews { eyes, size: s.size })
 }
 
@@ -638,8 +673,72 @@ pub fn submit_eye(eye: usize, queue: &wgpu::Queue, frame: &wgpu::Texture) {
     }
 }
 
+/// Whether the game has a menu open (the title screen, a loading screen, pause, the
+/// inventory...): the frame then goes to a panel in the room, and the head does not turn
+/// the player.
+pub fn set_menu(open: bool) {
+    if let Some(s) = xr_state().as_mut().and_then(|x| x.session.as_mut()) {
+        s.menu_open = open;
+        if !open {
+            s.menu_pose = None;
+        }
+    }
+}
+
+/// See [`set_menu`].
+pub fn menu_open() -> bool {
+    xr_state()
+        .as_ref()
+        .and_then(|x| x.session.as_ref())
+        .is_some_and(|s| s.menu_open)
+}
+
+/// Copies `frame` into the panel (`Panel`) for the frame `begin_frame` started.
+pub fn submit_panel(kind: Panel, queue: &wgpu::Queue, frame: &wgpu::Texture) {
+    let mut guard = xr_state();
+    let Some(s) = guard.as_mut().and_then(|x| x.session.as_mut()) else {
+        return;
+    };
+    if s.pending.is_none() {
+        return;
+    }
+    let blit = match kind {
+        Panel::Menu => &s.blit,
+        Panel::Hud => &s.blit_alpha,
+    };
+    match s.panel.draw(&s.device, queue, blit, frame) {
+        Ok(()) => s.panel_drawn = Some(kind),
+        Err(e) => log::warn!("Horizon VR: panel: {e}"),
+    }
+}
+
+/// A menu panel facing the head, `MENU_DISTANCE` ahead of it, upright.
+fn menu_pose(head: Quat, position: Vec3) -> xr::Posef {
+    let f = head * Vec3::NEG_Z;
+    let turn = Quat::from_rotation_y((-f.x).atan2(-f.z));
+    let at = position + turn * Vec3::new(0.0, 0.0, -MENU_DISTANCE);
+    pose(turn, at)
+}
+
+fn pose(rotation: Quat, position: Vec3) -> xr::Posef {
+    xr::Posef {
+        orientation: xr::Quaternionf {
+            x: rotation.x,
+            y: rotation.y,
+            z: rotation.z,
+            w: rotation.w,
+        },
+        position: xr::Vector3f {
+            x: position.x,
+            y: position.y,
+            z: position.z,
+        },
+    }
+}
+
 /// Shows the frame `begin_frame` started. An eye the game did not draw shows dark red,
-/// so a frame that never came is told apart from a black one.
+/// so a frame that never came is told apart from a black one; a menu frame shows only
+/// its panel.
 pub fn end_frame(queue: &wgpu::Queue) {
     let mut guard = xr_state();
     let Some(s) = guard.as_mut().and_then(|x| x.session.as_mut()) else {
@@ -655,8 +754,9 @@ pub fn end_frame(queue: &wgpu::Queue) {
             height: s.size[1] as i32,
         },
     };
+    let menu = s.panel_drawn == Some(Panel::Menu);
     for eye in 0..2 {
-        if !s.eye_drawn[eye] {
+        if !menu && !s.eye_drawn[eye] {
             s.stats.blank += 1;
             match s.eyes[eye].fill(&s.device, queue, wgpu::Color { r: 0.25, g: 0.0, b: 0.0, a: 1.0 }) {
                 Ok(()) => s.eye_drawn[eye] = true,
@@ -664,7 +764,31 @@ pub fn end_frame(queue: &wgpu::Queue) {
             }
         }
     }
-    let result = if s.eye_drawn == [true; 2] {
+    let aspect = s.size[1] as f32 / s.size[0] as f32;
+    let panel_rect = rect;
+    let result = if menu {
+        s.stats.shown += 1;
+        let at = s.menu_pose.unwrap_or_else(|| pose(Quat::IDENTITY, Vec3::new(0.0, 0.0, -MENU_DISTANCE)));
+        let layer = xr::CompositionLayerQuad::new()
+            .space(&s.local)
+            .eye_visibility(xr::EyeVisibility::BOTH)
+            .sub_image(
+                xr::SwapchainSubImage::new()
+                    .swapchain(&s.panel.handle)
+                    .image_array_index(0)
+                    .image_rect(panel_rect),
+            )
+            .pose(at)
+            .size(xr::Extent2Df {
+                width: MENU_WIDTH,
+                height: MENU_WIDTH * aspect,
+            });
+        s.stream.end(
+            state.predicted_display_time,
+            xr::EnvironmentBlendMode::OPAQUE,
+            &[&layer],
+        )
+    } else if s.eye_drawn == [true; 2] {
         s.stats.shown += 1;
         let projection_views = [0, 1].map(|i| {
             xr::CompositionLayerProjectionView::new()
@@ -680,11 +804,34 @@ pub fn end_frame(queue: &wgpu::Queue) {
         let layer = xr::CompositionLayerProjection::new()
             .space(&s.local)
             .views(&projection_views);
-        s.stream.end(
-            state.predicted_display_time,
-            xr::EnvironmentBlendMode::OPAQUE,
-            &[&layer],
-        )
+        let hud = xr::CompositionLayerQuad::new()
+            .space(&s.view)
+            .layer_flags(xr::CompositionLayerFlags::BLEND_TEXTURE_SOURCE_ALPHA)
+            .eye_visibility(xr::EyeVisibility::BOTH)
+            .sub_image(
+                xr::SwapchainSubImage::new()
+                    .swapchain(&s.panel.handle)
+                    .image_array_index(0)
+                    .image_rect(panel_rect),
+            )
+            .pose(pose(Quat::IDENTITY, Vec3::new(0.0, 0.0, -HUD_DISTANCE)))
+            .size(xr::Extent2Df {
+                width: HUD_WIDTH,
+                height: HUD_WIDTH * aspect,
+            });
+        if s.panel_drawn == Some(Panel::Hud) {
+            s.stream.end(
+                state.predicted_display_time,
+                xr::EnvironmentBlendMode::OPAQUE,
+                &[&layer, &hud],
+            )
+        } else {
+            s.stream.end(
+                state.predicted_display_time,
+                xr::EnvironmentBlendMode::OPAQUE,
+                &[&layer],
+            )
+        }
     } else {
         s.stream
             .end(state.predicted_display_time, xr::EnvironmentBlendMode::OPAQUE, &[])
@@ -700,6 +847,10 @@ pub fn look(yaw: f32) -> Option<(f32, f32)> {
     let mut guard = xr_state();
     let s = guard.as_mut()?.session.as_mut()?;
     let (head, _) = s.head?;
+    if s.menu_open {
+        // The menu stays where it is; the player turns to the head once it closes.
+        return None;
+    }
     match s.last_yaw {
         // The first look keeps the player facing where they were.
         None => s.body_yaw = yaw - yaw_pitch(body_rotation(0.0) * head).0,

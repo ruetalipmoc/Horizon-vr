@@ -1072,6 +1072,10 @@ pub struct Renderer {
     xr_view: Option<ViewSet>,
     /// VR: when the left eye was last saved for the developer (`render_xr`).
     xr_snapshot: Option<Instant>,
+    /// VR: the eyes are drawn without the HUD, which goes to its own panel.
+    xr_hud_skip: bool,
+    /// VR: the HUD's panel image, the frame's size.
+    xr_hud: Option<wgpu::Texture>,
     /// Offscreen submissions still on the GPU: at most two frames run ahead.
     in_flight: std::collections::VecDeque<wgpu::SubmissionIndex>,
     /// Splitscreen: the caller waits for the GPU once every player has submitted
@@ -4733,6 +4737,8 @@ impl Renderer {
             offscreen,
             xr_view: None,
             xr_snapshot: None,
+            xr_hud_skip: false,
+            xr_hud: None,
             in_flight: std::collections::VecDeque::new(),
             paced_elsewhere: false,
             first_frame: if previous.is_none() {
@@ -7459,21 +7465,31 @@ impl Renderer {
         // The headset shows the frames, not the window: a window Android hid (the
         // immersive activity has none on screen) does not stop them.
         let suspended = std::mem::replace(&mut self.suspended, false);
+        // A menu, the title screen or a loading screen: drawn once, flat, onto a panel
+        // in the room.
+        if frame.title || horizon_xr::menu_open() {
+            self.xr_dev_snapshot();
+            let drawn = self.render_screen(frame);
+            horizon_xr::note_draw(match &drawn {
+                Ok(true) => "menu drawn",
+                Ok(false) => "menu not drawn",
+                Err(_) => "menu failed",
+            });
+            if matches!(drawn, Ok(true))
+                && let Some(target) = &self.offscreen
+            {
+                horizon_xr::submit_panel(horizon_xr::Panel::Menu, &self.queue, target);
+            }
+            self.suspended = suspended;
+            horizon_xr::end_frame(&self.queue);
+            return drawn;
+        }
+        self.xr_hud_skip = true;
         let mut drawn = Ok(false);
         for (i, eye) in xr.eyes.iter().enumerate() {
             self.xr_view = Some(ViewSet::with_cull(xr_eye_view(eye, far), cull));
-            // Development builds that send their log (HORIZON_LOG_URL) also send what the
-            // left eye sees now and then: there is no other way to look at it.
-            if i == 0 && option_env!("HORIZON_LOG_URL").is_some() && self.screenshot.is_none() {
-                let due = self.xr_snapshot.is_none_or(|t| t.elapsed() > std::time::Duration::from_secs(10));
-                if due && let Some(home) = std::env::var_os("HORIZON_HOME") {
-                    self.xr_snapshot = Some(Instant::now());
-                    self.screenshot = Some(ScreenshotRequest {
-                        path: PathBuf::from(home).join("vr-eye.png"),
-                        size: None,
-                        scaled: false,
-                    });
-                }
+            if i == 0 {
+                self.xr_dev_snapshot();
             }
             drawn = self.render_screen(frame);
             horizon_xr::note_draw(match &drawn {
@@ -7488,6 +7504,10 @@ impl Renderer {
                 Some(target) => horizon_xr::submit_eye(i, &self.queue, target),
                 None => horizon_xr::note_draw("no offscreen target"),
             }
+        }
+        self.xr_hud_skip = false;
+        if matches!(drawn, Ok(true)) {
+            self.xr_draw_hud(frame);
         }
         self.suspended = suspended;
         self.xr_view = None;
@@ -7507,6 +7527,83 @@ impl Renderer {
         });
         horizon_xr::end_frame(&self.queue);
         drawn
+    }
+    /// Development builds that send their log (HORIZON_LOG_URL) also save what the left
+    /// eye (or the menu panel) shows now and then: there is no other way to look at it.
+    #[cfg(target_os = "android")]
+    fn xr_dev_snapshot(&mut self) {
+        if option_env!("HORIZON_LOG_URL").is_none() || self.screenshot.is_some() {
+            return;
+        }
+        let due = self
+            .xr_snapshot
+            .is_none_or(|t| t.elapsed() > std::time::Duration::from_secs(10));
+        if due && let Some(home) = std::env::var_os("HORIZON_HOME") {
+            self.xr_snapshot = Some(Instant::now());
+            self.screenshot = Some(ScreenshotRequest {
+                path: PathBuf::from(home).join("vr-eye.png"),
+                size: None,
+                scaled: false,
+            });
+        }
+    }
+    /// VR: the frame's HUD alone, on a clear image, for its panel.
+    #[cfg(target_os = "android")]
+    fn xr_draw_hud(&mut self, frame: &Frame) {
+        let size = [self.config.width, self.config.height];
+        let fits = self
+            .xr_hud
+            .as_ref()
+            .is_some_and(|t| [t.width(), t.height()] == size && t.format() == self.frame_format);
+        if !fits {
+            self.xr_hud = Some(self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("Horizon VR HUD"),
+                size: wgpu::Extent3d {
+                    width: size[0],
+                    height: size[1],
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: self.frame_format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            }));
+        }
+        let Some(texture) = &self.xr_hud else {
+            return;
+        };
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Horizon VR HUD"),
+            });
+        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Horizon VR HUD clear"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &view,
+                resolve_target: None,
+                depth_slice: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            ..Default::default()
+        });
+        self.hud.draw_range(
+            &mut encoder,
+            &view,
+            &self.depth,
+            frame.hud,
+            size,
+            0..frame.hud.vertices.len() as u32,
+            None,
+        );
+        self.queue.submit([encoder.finish()]);
+        horizon_xr::submit_panel(horizon_xr::Panel::Hud, &self.queue, texture);
     }
     fn render_screen(&mut self, frame: &Frame) -> Result<bool> {
         crate::sdk_post::capture(frame);
@@ -11646,6 +11743,13 @@ impl Renderer {
             pass.set_vertex_buffer(0, self.debug_line_buffer.slice(..));
             let first = overlay.first_crosshair;
             pass.draw(0..4, first..first + overlay.crosshair);
+        }
+        // VR: the HUD has a panel of its own (`render_xr`).
+        if self.xr_hud_skip {
+            if overlay.real {
+                self.own_timing = timing;
+            }
+            return readback;
         }
         let menu_blur = frame
             .menu_blur
