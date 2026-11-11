@@ -83,11 +83,31 @@ pub struct Eye {
     pub fov: [f32; 4],
 }
 
+/// A controller's pose for the frame, in Minecraft's world axes.
+#[derive(Clone, Copy, Debug)]
+pub struct HandPose {
+    /// The controller's orientation in the world (its -Z points ahead).
+    pub rotation: Quat,
+    /// Its position relative to the game's camera, in world axes (as `Eye::offset`).
+    pub offset: Vec3,
+}
+
+/// The controllers, in `Hands` order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Hand {
+    LeftGrip = 0,
+    RightGrip = 1,
+    LeftAim = 2,
+    RightAim = 3,
+}
+
 /// What the renderer needs for a frame: both eyes and the eye image size.
 #[derive(Clone, Copy, Debug)]
 pub struct FrameViews {
     pub eyes: [Eye; 2],
     pub size: [u32; 2],
+    /// The controllers that are tracked, by `Hand`.
+    pub hands: [Option<HandPose>; 4],
 }
 
 /// The activity the OpenXR loader and runtime attach to, set once by `android_main`.
@@ -176,6 +196,14 @@ struct Session {
     eye_drawn: [bool; 2],
     /// The head's pose in LOCAL space at the last `begin_frame`.
     head: Option<(Quat, Vec3)>,
+    /// The controllers' spaces and their poses in LOCAL space at the last frame, by `Hand`.
+    hand_spaces: Vec<xr::Space>,
+    hands: [Option<(Quat, Vec3)>; 4],
+    /// Where the right controller points on the open menu's panel (0..1, from the top
+    /// left), the trigger held, and the point in LOCAL space.
+    pointer: Option<([f32; 2], bool, Vec3)>,
+    /// The pointer's dot, drawn on the panel where it points.
+    dot: blit::EyeChain,
     /// Where the head started; leaning away from it moves the view.
     anchor: Option<Vec3>,
     /// The player's yaw minus the head's yaw in LOCAL space, in degrees.
@@ -576,6 +604,12 @@ fn start_session(xr: &Xr, device: &wgpu::Device, raw_device: vk::Device) -> Resu
     session
         .attach_action_sets(&[&actions.set])
         .map_err(|e| format!("controllers: {e}"))?;
+    let hand_spaces = actions
+        .poses
+        .iter()
+        .map(|action| action.create_space(&session, xr::Path::NULL, xr::Posef::IDENTITY))
+        .collect::<xr::Result<Vec<_>>>()
+        .map_err(|e| format!("controller spaces: {e}"))?;
     let views = xr
         .instance
         .enumerate_view_configuration_views(xr.system, VIEW_TYPE)
@@ -604,6 +638,7 @@ fn start_session(xr: &Xr, device: &wgpu::Device, raw_device: vk::Device) -> Resu
         blit::EyeChain::new(&session, device, format, size)?,
     ];
     let panel = blit::EyeChain::new(&session, device, format, size)?;
+    let dot = blit::EyeChain::new(&session, device, format, [16, 16])?;
     Ok(Session {
         session,
         waiter,
@@ -627,6 +662,10 @@ fn start_session(xr: &Xr, device: &wgpu::Device, raw_device: vk::Device) -> Resu
         pending: None,
         eye_drawn: [false; 2],
         head: None,
+        hand_spaces,
+        hands: [None; 4],
+        pointer: None,
+        dot,
         anchor: None,
         body_yaw: 0.0,
         last_yaw: None,
@@ -723,13 +762,67 @@ pub fn begin_frame() -> Option<FrameViews> {
             ],
         }
     });
+    let time = state.predicted_display_time;
+    for (i, space) in s.hand_spaces.iter().enumerate() {
+        s.hands[i] = space
+            .locate(&s.local, time)
+            .ok()
+            .filter(|l| l.location_flags.contains(tracked))
+            .map(|l| (quat(l.pose.orientation), vec3(l.pose.position)));
+    }
+    let hands = s.hands.map(|hand| {
+        hand.map(|(rotation, position)| HandPose {
+            rotation: body * rotation,
+            offset: body * (position - head_position + lean),
+        })
+    });
     if s.menu_open && s.menu_pose.is_none() {
         s.menu_pose = Some(menu_pose(head_rotation, head_position));
     }
+    let aspect = s.size[1] as f32 / s.size[0] as f32;
+    s.pointer = match (s.menu_open.then_some(s.menu_pose).flatten(), s.hands[Hand::RightAim as usize]) {
+        (Some(panel), Some((rotation, origin))) => {
+            panel_hit(panel, MENU_WIDTH, MENU_WIDTH * aspect, origin, rotation * Vec3::NEG_Z)
+                .map(|(uv, at)| (uv, s.pad.triggers[1] > 0.5, at))
+        }
+        _ => None,
+    };
     s.pending = Some((state, views));
     s.eye_drawn = [false; 2];
     s.panel_drawn = None;
-    Some(FrameViews { eyes, size: s.size })
+    Some(FrameViews {
+        eyes,
+        size: s.size,
+        hands,
+    })
+}
+
+/// Where a ray from `origin` along `direction` meets a quad layer at `panel` of
+/// `width` by `height` metres: its texture coordinates (from the top left) and the point.
+fn panel_hit(panel: xr::Posef, width: f32, height: f32, origin: Vec3, direction: Vec3) -> Option<([f32; 2], Vec3)> {
+    let rotation = quat(panel.orientation);
+    let centre = vec3(panel.position);
+    let normal = rotation * Vec3::Z;
+    let facing = direction.dot(normal);
+    if facing.abs() < 1e-4 {
+        return None;
+    }
+    let t = (centre - origin).dot(normal) / facing;
+    if t <= 0.0 {
+        return None;
+    }
+    let at = origin + direction * t;
+    let local = rotation.inverse() * (at - centre);
+    let uv = [local.x / width + 0.5, 0.5 - local.y / height];
+    uv.iter().all(|c| (0.0..=1.0).contains(c)).then_some((uv, at))
+}
+
+/// Where the right controller points on the open menu's panel, in texture coordinates
+/// from the top left, and whether its trigger is held.
+pub fn pointer() -> Option<([f32; 2], bool)> {
+    let guard = xr_state();
+    let s = guard.as_ref()?.session.as_ref()?;
+    s.pointer.map(|(uv, click, _)| (uv, click))
 }
 
 /// Copies `frame` (the offscreen target the eye was drawn into) into eye `eye`'s
@@ -882,7 +975,41 @@ pub fn end_frame(queue: &wgpu::Queue) {
                 width,
                 height: width * aspect,
             });
-        if s.panel_drawn.is_some() {
+        let dot_at = s.pointer.zip(s.menu_pose).and_then(|((_, click, at), panel)| {
+            let colour = if click {
+                wgpu::Color { r: 1.0, g: 0.85, b: 0.2, a: 1.0 }
+            } else {
+                wgpu::Color::WHITE
+            };
+            s.dot.fill(&s.device, queue, colour).ok()?;
+            let rotation = quat(panel.orientation);
+            Some(pose(rotation, at + rotation * Vec3::new(0.0, 0.0, 0.005)))
+        });
+        let dot_rect = xr::Rect2Di {
+            offset: xr::Offset2Di { x: 0, y: 0 },
+            extent: xr::Extent2Di { width: 16, height: 16 },
+        };
+        let dot = xr::CompositionLayerQuad::new()
+            .space(&s.local)
+            .eye_visibility(xr::EyeVisibility::BOTH)
+            .sub_image(
+                xr::SwapchainSubImage::new()
+                    .swapchain(&s.dot.handle)
+                    .image_array_index(0)
+                    .image_rect(dot_rect),
+            )
+            .pose(dot_at.unwrap_or(pose(Quat::IDENTITY, Vec3::ZERO)))
+            .size(xr::Extent2Df {
+                width: 0.015,
+                height: 0.015,
+            });
+        if s.panel_drawn.is_some() && dot_at.is_some() {
+            s.stream.end(
+                state.predicted_display_time,
+                xr::EnvironmentBlendMode::OPAQUE,
+                &[&layer, &panel, &dot],
+            )
+        } else if s.panel_drawn.is_some() {
             s.stream.end(
                 state.predicted_display_time,
                 xr::EnvironmentBlendMode::OPAQUE,
@@ -909,7 +1036,9 @@ pub fn end_frame(queue: &wgpu::Queue) {
 pub fn look(yaw: f32) -> Option<(f32, f32)> {
     let mut guard = xr_state();
     let s = guard.as_mut()?.session.as_mut()?;
-    let (head, _) = s.head?;
+    // The player looks where the right controller points (blocks are aimed at with it),
+    // where the head does while it is not tracked.
+    let head = s.hands[Hand::RightAim as usize].map_or(s.head?.0, |(rotation, _)| rotation);
     if s.menu_open {
         // The menu stays where it is; the player turns to the head once it closes.
         return None;
@@ -1012,6 +1141,8 @@ struct Actions {
     sticks: [xr::Action<xr::Vector2f>; 2],
     triggers: [xr::Action<f32>; 2],
     grips: [xr::Action<f32>; 2],
+    /// Grip and aim poses, by `Hand`.
+    poses: [xr::Action<xr::Posef>; 4],
 }
 
 /// The buttons in `Actions::bools` order, with their Touch controller paths.
@@ -1044,8 +1175,22 @@ impl Actions {
             set.create_action::<f32>("left_grip", "Left grip", &[])?,
             set.create_action::<f32>("right_grip", "Right grip", &[])?,
         ];
+        let poses = [
+            set.create_action::<xr::Posef>("left_grip_pose", "Left hand", &[])?,
+            set.create_action::<xr::Posef>("right_grip_pose", "Right hand", &[])?,
+            set.create_action::<xr::Posef>("left_aim_pose", "Left pointer", &[])?,
+            set.create_action::<xr::Posef>("right_aim_pose", "Right pointer", &[])?,
+        ];
         let path = |p: &str| instance.string_to_path(p);
         let mut bindings = Vec::new();
+        for (action, p) in poses.iter().zip([
+            "/user/hand/left/input/grip/pose",
+            "/user/hand/right/input/grip/pose",
+            "/user/hand/left/input/aim/pose",
+            "/user/hand/right/input/aim/pose",
+        ]) {
+            bindings.push(xr::Binding::new(action, path(p)?));
+        }
         for (action, (_, p)) in bools.iter().zip(BUTTONS) {
             bindings.push(xr::Binding::new(action, path(p)?));
         }
@@ -1073,6 +1218,7 @@ impl Actions {
             sticks,
             triggers,
             grips,
+            poses,
         })
     }
 

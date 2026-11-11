@@ -132,6 +132,12 @@ fn with_touch_controllers(mut pad: PadState, touch: horizon_xr::Pad) -> PadState
             pad.set(button, true);
         }
     }
+    // Pointing at a menu, the right trigger clicks there (`xr_pointer`), not the pad.
+    let touch = if horizon_xr::pointer().is_some() {
+        horizon_xr::Pad { triggers: [touch.triggers[0], 0.0], ..touch }
+    } else {
+        touch
+    };
     let stronger = |a: [f32; 2], b: [f32; 2]| if b[0].hypot(b[1]) > a[0].hypot(a[1]) { b } else { a };
     pad.left = stronger(pad.left, touch.left);
     pad.right = stronger(pad.right, touch.right);
@@ -401,7 +407,30 @@ impl super::Game<'_> {
             self.turn_player(turn[0], turn[1]);
         }
     }
+    /// VR: the right controller points at the menu's panel like a mouse, its trigger
+    /// the left button.
+    fn xr_pointer(&mut self) {
+        static CLICK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        static AT: Mutex<[f64; 2]> = Mutex::new([-1.0; 2]);
+        let pointer = horizon_xr::pointer();
+        let click = pointer.is_some_and(|(_, held)| held);
+        let mut s = shared();
+        if let (Some((uv, _)), Some(r)) = (pointer, &self.renderer) {
+            let at = [f64::from(uv[0]) * f64::from(r.config.width), f64::from(uv[1]) * f64::from(r.config.height)];
+            let mut last = AT.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if (at[0] - last[0]).abs() + (at[1] - last[1]).abs() > 0.5 {
+                *last = at;
+                s.mouse.push(MouseInput::Move(at));
+            }
+        }
+        if CLICK.swap(click, std::sync::atomic::Ordering::Relaxed) != click {
+            s.mouse.push(MouseInput::Button(0, click));
+        }
+    }
     pub(super) fn android_input_frame(&mut self, event_loop: &dyn super::event_loop::EventLoopCtl) {
+        if horizon_xr::active() {
+            self.xr_pointer();
+        }
         use winit::{
             application::ApplicationHandler,
             dpi::PhysicalPosition,

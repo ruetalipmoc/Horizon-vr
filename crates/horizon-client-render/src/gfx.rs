@@ -1073,6 +1073,9 @@ pub struct Renderer {
     /// VR: the lens of the eye being drawn (tangents left, right, up, down), for the
     /// title panorama.
     xr_eye_fov: Option<[f32; 4]>,
+    /// VR: the right controller, which the first-person hand and its item follow.
+    #[cfg(target_os = "android")]
+    xr_hand: Option<horizon_xr::HandPose>,
     /// VR: when the left eye was last saved for the developer (`render_xr`).
     xr_snapshot: Option<Instant>,
     /// VR: the eyes are drawn without the HUD, which goes to its own panel.
@@ -4754,6 +4757,8 @@ impl Renderer {
             offscreen,
             xr_view: None,
             xr_eye_fov: None,
+            #[cfg(target_os = "android")]
+            xr_hand: None,
             xr_snapshot: None,
             xr_hud_skip: false,
             xr_hud: None,
@@ -7480,6 +7485,7 @@ impl Renderer {
         }
         let far = frame.depth_far;
         let cull = xr_cull_view(&xr.eyes, far);
+        self.xr_hand = xr.hands[horizon_xr::Hand::RightGrip as usize];
         // The headset shows the frames, not the window: a window Android hid (the
         // immersive activity has none on screen) does not stop them.
         let suspended = std::mem::replace(&mut self.suspended, false);
@@ -8146,6 +8152,15 @@ impl Renderer {
             frame.depth_far,
         ));
         let hand_view_proj = hand_projection * frame.bob * view;
+        // VR: the hand the game placed before its camera, moved onto the controller.
+        #[cfg(target_os = "android")]
+        let hand_view_proj = match (self.xr_view, self.xr_hand) {
+            (Some(views), Some(hand)) => {
+                views.primary().view_proj(Mat4::IDENTITY)
+                    * xr_hand_model(hand, crate::camera::view_matrix(frame.yaw, frame.pitch))
+            }
+            _ => hand_view_proj,
+        };
         let hand_globals = Globals {
             view_proj: hand_view_proj.to_cols_array_2d(),
             ..globals
@@ -12394,6 +12409,21 @@ fn fake_xr_fov() -> Option<[f32; 4]> {
             _ => [-1.07, 0.81, 0.93, -1.14],
         })
     })
+}
+
+/// Where the first-person hand sits before the game's camera (its local axes, metres):
+/// vanilla's right arm and held item, about.
+#[cfg(target_os = "android")]
+const XR_HAND_ANCHOR: Vec3 = Vec3::new(0.45, -0.45, -0.6);
+
+/// VR: camera-relative world to camera-relative world, moving the hand the game built
+/// before its camera (`camera_view`: the game's own yaw and pitch) onto the controller.
+#[cfg(target_os = "android")]
+fn xr_hand_model(hand: horizon_xr::HandPose, camera_view: Mat4) -> Mat4 {
+    Mat4::from_translation(hand.offset)
+        * Mat4::from_quat(hand.rotation)
+        * Mat4::from_translation(-XR_HAND_ANCHOR)
+        * camera_view
 }
 
 /// A view from the camera that sees everything either eye does, to cull with.
