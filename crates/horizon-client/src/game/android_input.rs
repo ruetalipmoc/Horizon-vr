@@ -397,8 +397,70 @@ impl super::Game<'_> {
     /// plays (a touch brings them back, `touch_event`).
     /// VR: the player looks where the head does (`horizon_xr::look`), through
     /// `Entity.turn` like the mouse, so everything that follows a turn still does.
+    /// VR: a fast swing of the right controller near a mob hits it, as a click on it
+    /// would: the player turns to it for a moment and the attack goes the usual way
+    /// (reach, cooldown, damage). Returns where to keep looking while it lands.
+    fn xr_swing(&mut self) -> Option<[f64; 3]> {
+        use std::time::{Duration, Instant};
+        static LAST: Mutex<Option<(Instant, [f64; 3])>> = Mutex::new(None);
+        static TARGET: Mutex<Option<(Instant, [f64; 3])>> = Mutex::new(None);
+        static COOLDOWN: Mutex<Option<Instant>> = Mutex::new(None);
+        let now = Instant::now();
+        let held = *TARGET.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((until, at)) = held
+            && now < until
+        {
+            return Some(at);
+        }
+        if self.screen != super::Screen::Playing || self.title.is_some() {
+            return None;
+        }
+        let eye = self.eye_position()?;
+        let hand = horizon_xr::last_hands()?[horizon_xr::Hand::RightAim as usize]?;
+        let tip = [0, 1, 2].map(|i| eye[i] + f64::from(hand.offset[i]));
+        let mut last = LAST.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let speed = last.map_or(0.0, |(t, p): (Instant, [f64; 3])| {
+            let dt = now.duration_since(t).as_secs_f64().max(1e-3);
+            ((tip[0] - p[0]).powi(2) + (tip[1] - p[1]).powi(2) + (tip[2] - p[2]).powi(2)).sqrt() / dt
+        });
+        *last = Some((now, tip));
+        drop(last);
+        let mut cooldown = COOLDOWN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if speed < 2.0 || cooldown.is_some_and(|t| now < t) {
+            return None;
+        }
+        // The nearest mob whose body (about a metre up from its feet) the hand sweeps by.
+        let target = self
+            .mobs
+            .iter()
+            .filter(|m| m.alive())
+            .map(|m| [m.position.x as f64, m.position.y as f64 + 0.9, m.position.z as f64])
+            .map(|c| (c, ((c[0] - tip[0]).powi(2) + (c[1] - tip[1]).powi(2) + (c[2] - tip[2]).powi(2)).sqrt()))
+            .filter(|(_, d)| *d < 1.3)
+            .min_by(|a, b| a.1.total_cmp(&b.1))?
+            .0;
+        *cooldown = Some(now + Duration::from_millis(400));
+        *TARGET.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some((now + Duration::from_millis(150), target));
+        let mut s = shared();
+        s.mouse.push(MouseInput::Button(0, true));
+        s.mouse.push(MouseInput::Button(0, false));
+        Some(target)
+    }
     pub(super) fn xr_look(&mut self) {
         horizon_xr::set_menu(self.title.is_some() || self.screen != super::Screen::Playing);
+        if let Some(at) = self.xr_swing()
+            && let Some(eye) = self.eye_position()
+        {
+            // Look at the mob being hit until the swing's click lands.
+            let d = [at[0] - eye[0], at[1] - eye[1], at[2] - eye[2]];
+            let yaw = (-d[0]).atan2(d[2]).to_degrees() as f32;
+            let pitch = (-d[1]).atan2(d[0].hypot(d[2])).to_degrees() as f32;
+            let yaw = self.yaw + ((yaw - self.yaw + 180.0).rem_euclid(360.0) - 180.0);
+            let turn = [f64::from(yaw - self.yaw), f64::from(pitch - self.pitch)].map(|d| d / 0.15);
+            self.turn_player(turn[0], turn[1]);
+            return;
+        }
         horizon_xr::note_controller_setting(self.settings.controller.enabled);
         // The hotbar on the left wrist: where it is in the HUD's image, and the slot the
         // right controller touches there.
@@ -407,7 +469,8 @@ impl super::Game<'_> {
             let (w, h) = (r.config.width as f32, r.config.height as f32);
             let left = w / 2.0 - 91.0 * scale;
             horizon_xr::Hotbar {
-                crop: [left - 2.0 * scale, h - 52.0 * scale, 186.0 * scale, 52.0 * scale],
+                // Up to the held item's name above the bars (Gui's toolHighlight).
+                crop: [left - 2.0 * scale, h - 72.0 * scale, 186.0 * scale, 72.0 * scale],
                 slots: [left + 1.0 * scale, h - 22.0 * scale, 20.0 * scale, 22.0 * scale],
             }
         });

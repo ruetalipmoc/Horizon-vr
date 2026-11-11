@@ -643,7 +643,13 @@ fn start_session(xr: &Xr, device: &wgpu::Device, raw_device: vk::Device) -> Resu
         views[0].recommended_image_rect_width,
         views[0].recommended_image_rect_height,
     ];
-    let size = recommended.map(|side| ((side as f32 * RESOLUTION_SCALE) as u32 / 8 * 8).max(64));
+    // `HORIZON_XR_SCALE` (0.4..1.4): another share of the recommended size, to measure.
+    let scale = std::env::var("HORIZON_XR_SCALE")
+        .ok()
+        .and_then(|v| v.trim().parse::<f32>().ok())
+        .filter(|v| (0.4..=1.4).contains(v))
+        .unwrap_or(RESOLUTION_SCALE);
+    let size = recommended.map(|side| ((side as f32 * scale) as u32 / 8 * 8).max(64));
     let formats = session
         .enumerate_swapchain_formats()
         .map_err(|e| format!("swapchain formats: {e}"))?;
