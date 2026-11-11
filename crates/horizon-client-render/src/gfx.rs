@@ -2567,6 +2567,10 @@ impl Renderer {
         linear_pack: bool,
         hdr_float: bool,
     ) -> Result<Self> {
+        // VR: frames go to the headset's eyes, never to the window, also when the renderer
+        // is rebuilt on the same device (resource reloads).
+        #[cfg(target_os = "android")]
+        let offscreen = offscreen || horizon_xr::active();
         let Opened {
             instance,
             surface,
@@ -7428,8 +7432,9 @@ impl Renderer {
             if !matches!(drawn, Ok(true)) {
                 break;
             }
-            if let Some(target) = &self.offscreen {
-                horizon_xr::submit_eye(i, &self.queue, target);
+            match &self.offscreen {
+                Some(target) => horizon_xr::submit_eye(i, &self.queue, target),
+                None => horizon_xr::note_draw("no offscreen target"),
             }
         }
         self.suspended = suspended;
