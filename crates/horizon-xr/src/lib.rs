@@ -20,7 +20,7 @@ mod blit;
 use ash::vk::{self, Handle};
 use glam::{Quat, Vec3};
 use openxr as xr;
-use std::ffi::c_void;
+use std::ffi::{CStr, CString, c_void};
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::Duration;
@@ -111,9 +111,10 @@ fn xr_state() -> MutexGuard<'static, Option<Xr>> {
 struct Xr {
     instance: xr::Instance,
     system: xr::SystemId,
-    vk_entry: ash::Entry,
     vk_instance: ash::Instance,
     physical_device: vk::PhysicalDevice,
+    /// The device extensions the runtime needs (`xrGetVulkanDeviceExtensionsKHR`).
+    device_extensions: Vec<&'static CStr>,
     session: Option<Session>,
 }
 
@@ -278,11 +279,15 @@ fn open_instance(ctx: &Context) -> Result<(wgpu::Instance, wgpu::Adapter), Strin
     let available = entry
         .enumerate_extensions()
         .map_err(|e| format!("OpenXR extensions: {e}"))?;
-    if !available.khr_vulkan_enable2 {
-        return Err("the OpenXR runtime has no XR_KHR_vulkan_enable2".into());
+    // XR_KHR_vulkan_enable, not ..._enable2: wgpu makes the instance and the device itself
+    // as on a phone, with the runtime's extensions added. Made by the runtime
+    // (xrCreateVulkanDeviceKHR), the device drew no terrain on Quest: the indirect draws'
+    // features did not reach it.
+    if !available.khr_vulkan_enable {
+        return Err("the OpenXR runtime has no XR_KHR_vulkan_enable".into());
     }
     let mut wanted = xr::ExtensionSet::default();
-    wanted.khr_vulkan_enable2 = true;
+    wanted.khr_vulkan_enable = true;
     wanted.khr_android_create_instance = true;
     let instance = entry
         .create_instance(
@@ -330,8 +335,25 @@ fn open_instance(ctx: &Context) -> Result<(wgpu::Instance, wgpu::Adapter), Strin
         ));
     }
     let flags = wgpu::InstanceFlags::empty();
-    let extensions = hv::Instance::desired_extensions(&vk_entry, version, flags)
+    let mut extensions = hv::Instance::desired_extensions(&vk_entry, version, flags)
         .map_err(|e| format!("Vulkan extensions: {e:?}"))?;
+    let runtime_instance = instance
+        .vulkan_legacy_instance_extensions(system)
+        .map_err(|e| format!("the runtime's Vulkan instance extensions: {e}"))?;
+    for name in leak_names(&runtime_instance) {
+        if !extensions.contains(&name) {
+            extensions.push(name);
+        }
+    }
+    let device_extensions = leak_names(
+        &instance
+            .vulkan_legacy_device_extensions(system)
+            .map_err(|e| format!("the runtime's Vulkan device extensions: {e}"))?,
+    );
+    log::info!(
+        "Horizon VR: the runtime asks for Vulkan instance extensions [{runtime_instance}] and \
+         device extensions {device_extensions:?}"
+    );
     let extension_names: Vec<*const std::ffi::c_char> = extensions.iter().map(|e| e.as_ptr()).collect();
     let app_info = vk::ApplicationInfo::default()
         .application_name(c"Horizon")
@@ -340,24 +362,9 @@ fn open_instance(ctx: &Context) -> Result<(wgpu::Instance, wgpu::Adapter), Strin
     let create_info = vk::InstanceCreateInfo::default()
         .application_info(&app_info)
         .enabled_extension_names(&extension_names);
-    // Safety: a valid create info and the loader's own vkGetInstanceProcAddr.
-    #[allow(clippy::missing_transmute_annotations)]
-    let raw_instance = unsafe {
-        instance.create_vulkan_instance(
-            system,
-            std::mem::transmute(vk_entry.static_fn().get_instance_proc_addr),
-            &create_info as *const _ as *const _,
-        )
-    }
-    .map_err(|e| format!("Vulkan instance through OpenXR: {e}"))?
-    .map_err(|e| format!("Vulkan instance: {:?}", vk::Result::from_raw(e)))?;
-    // Safety: the instance was just created from this entry.
-    let vk_instance = unsafe {
-        ash::Instance::load(
-            vk_entry.static_fn(),
-            vk::Instance::from_raw(raw_instance as u64),
-        )
-    };
+    // Safety: a valid create info, its extensions offered by the loader.
+    let vk_instance = unsafe { vk_entry.create_instance(&create_info, None) }
+        .map_err(|e| format!("Vulkan instance: {e:?}"))?;
     // Safety: created from `vk_entry` with `version`, `extensions` and `flags`; wgpu-hal
     // owns it from here.
     let hal_instance = unsafe {
@@ -389,9 +396,9 @@ fn open_instance(ctx: &Context) -> Result<(wgpu::Instance, wgpu::Adapter), Strin
     *xr_state() = Some(Xr {
         instance,
         system,
-        vk_entry,
         vk_instance,
         physical_device,
+        device_extensions,
         session: None,
     });
     if let Some(marker) = marker() {
@@ -399,6 +406,15 @@ fn open_instance(ctx: &Context) -> Result<(wgpu::Instance, wgpu::Adapter), Strin
     }
     log::info!("Horizon VR: Vulkan {xr_version} instance ready through OpenXR");
     Ok((wgpu_instance, adapter))
+}
+
+/// A space-separated list of extension names, kept for the whole process (wgpu-hal
+/// takes `&'static CStr`s; it is read once).
+fn leak_names(list: &str) -> Vec<&'static CStr> {
+    list.split_whitespace()
+        .filter_map(|name| CString::new(name).ok())
+        .map(|name| &*Box::leak(name.into_boxed_c_str()))
+        .collect()
 }
 
 fn android_sdk_version() -> u32 {
@@ -444,56 +460,31 @@ fn open_vulkan_device(
     adapter: &wgpu::Adapter,
     desc: &wgpu::DeviceDescriptor<'_>,
 ) -> Result<Opened, String> {
-    let open = {
+    let (open, handle) = {
         // Safety: read and opened from here; dropped before wgpu takes the adapter back.
         let hal = unsafe { adapter.as_hal::<Vulkan>() }.ok_or("not a Vulkan adapter")?;
-        let extensions = hal.required_device_extensions(desc.required_features);
-        let mut features = hal.physical_device_features(&extensions, desc.required_features);
-        let extension_names: Vec<*const std::ffi::c_char> = extensions.iter().map(|e| e.as_ptr()).collect();
-        let priorities = [1.0];
-        let queues = [vk::DeviceQueueCreateInfo::default()
-            .queue_family_index(0)
-            .queue_priorities(&priorities)];
-        let info = features.add_to_device_create(
-            vk::DeviceCreateInfo::default()
-                .queue_create_infos(&queues)
-                .enabled_extension_names(&extension_names),
-        );
-        // Safety: what wgpu-hal's own open does, through the runtime.
-        #[allow(clippy::missing_transmute_annotations)]
-        let raw = unsafe {
-            xr.instance.create_vulkan_device(
-                xr.system,
-                std::mem::transmute(xr.vk_entry.static_fn().get_instance_proc_addr),
-                xr.physical_device.as_raw() as _,
-                &info as *const _ as *const _,
-            )
-        }
-        .map_err(|e| format!("Vulkan device through OpenXR: {e}"))?
-        .map_err(|e| format!("Vulkan device: {:?}", vk::Result::from_raw(e)))?;
-        // Safety: just created on this instance.
-        let vk_device = unsafe {
-            ash::Device::load(xr.vk_instance.fp_v1_0(), vk::Device::from_raw(raw as u64))
-        };
-        let handle = vk_device.handle();
-        // Safety: created from this adapter with these extensions and features.
+        let wanted = xr.device_extensions.clone();
+        // Safety: what wgpu's own request_device does, with the runtime's extensions.
         let open = unsafe {
-            hal.device_from_raw(
-                vk_device,
-                None,
-                &extensions,
+            hal.open_with_callback(
                 desc.required_features,
                 &desc.required_limits,
                 &desc.memory_hints,
-                0,
-                0,
+                Some(Box::new(move |args: hv::CreateDeviceCallbackArgs| {
+                    for name in &wanted {
+                        if !args.extensions.contains(name) {
+                            args.extensions.push(name);
+                        }
+                    }
+                })),
             )
         }
-        .map_err(|e| format!("wgpu device: {e:?}"))?;
+        .map_err(|e| format!("Vulkan device: {e:?}"))?;
+        let handle = open.device.raw_device().handle();
         (open, handle)
     };
     // Safety: opened from this adapter with exactly `desc`'s features.
-    Ok(unsafe { adapter.create_device_from_hal(open.0, desc) }.map(|(d, q)| (d, q, open.1)))
+    Ok(unsafe { adapter.create_device_from_hal(open, desc) }.map(|(d, q)| (d, q, handle)))
 }
 
 fn start_session(xr: &Xr, device: &wgpu::Device, raw_device: vk::Device) -> Result<Session, String> {
