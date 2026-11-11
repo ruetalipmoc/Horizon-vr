@@ -248,10 +248,10 @@ fn fs_unorm(in: Out) -> @location(0) vec4<f32> {
 
 // The HUD's panel keeps its coverage, for the compositor to blend.
 // The screens' dark veil behind menus (about 80% opaque) hides the world in VR: what is
-// translucent fades to less than half, what is (nearly) opaque stays.
+// translucent all but goes, what is (nearly) opaque stays.
 fn fade_veil(c: vec4<f32>) -> vec4<f32> {
     if c.a < 0.9 {
-        return c * 0.45;
+        return c * 0.12;
     }
     return c;
 }

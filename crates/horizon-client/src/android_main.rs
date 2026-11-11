@@ -65,7 +65,10 @@ fn android_main(app: AndroidApp) {
         android_msa::prepare(&internal, &home);
     }
     // VR: OpenXR attaches to this activity; the renderer opens its device through it.
-    if let Some(internal) = app.internal_data_path() {
+    // "PLAY 2D" (the profile screen) leaves `launch-2d`: the flat game, no VR.
+    if let Some(internal) = app.internal_data_path()
+        && !internal.join("launch-2d").exists()
+    {
         // SAFETY: android-activity's JavaVM and activity, valid for the whole process.
         unsafe {
             horizon_xr::set_android_context(app.vm_as_ptr(), app.activity_as_ptr(), internal);

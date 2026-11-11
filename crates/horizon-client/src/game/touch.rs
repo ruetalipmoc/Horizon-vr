@@ -831,6 +831,8 @@ impl Game<'_> {
     /// a close button, as Escape.
     fn touch_close_shown(&self) -> bool {
         cfg!(target_os = "android")
+            // VR closes with B, as on a console.
+            && !super::vr_active()
             && self.player.is_some()
             && self.title.is_none()
             && self.pad_in_menu()

@@ -7523,7 +7523,7 @@ impl Renderer {
         horizon_xr::note_renderer(|| {
             format!(
                 "sections resident {}, drawn {}, draws {}, draw calls {}, culled {:?}, GPU \
-                 culling {}, size {}x{}",
+                 culling {}, size {}x{}; slowest passes (ms per eye) {}",
                 self.resident_sections(),
                 self.drawn_sections,
                 self.section_draws,
@@ -7532,6 +7532,16 @@ impl Renderer {
                 self.gpu_culling(),
                 self.config.width,
                 self.config.height,
+                {
+                    let mut passes = self.own_pass_times();
+                    passes.sort_by(|a, b| b.1.total_cmp(&a.1));
+                    passes
+                        .iter()
+                        .take(8)
+                        .map(|(name, ms)| format!("{name} {ms:.2}"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                },
             )
         });
         horizon_xr::end_frame(&self.queue);

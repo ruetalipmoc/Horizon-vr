@@ -44,7 +44,8 @@ const HUD_WIDTH: f32 = 1.3;
 /// The hotbar's panel on the inside of the left forearm: its width in metres, and where
 /// it sits from the left controller's grip (its axes: toward the elbow is +Z).
 const WRIST_WIDTH: f32 = 0.2;
-const WRIST_AT: Vec3 = Vec3::new(0.03, 0.01, 0.13);
+// Off the arm's inside by a few centimetres (the arm is about 11 cm thick).
+const WRIST_AT: Vec3 = Vec3::new(0.085, 0.0, 0.13);
 /// How near (metres) the right controller's tip must come to the wrist's hotbar to pick
 /// a slot.
 const WRIST_TOUCH: f32 = 0.06;

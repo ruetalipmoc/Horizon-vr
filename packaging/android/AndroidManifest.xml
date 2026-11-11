@@ -64,6 +64,15 @@
             </intent-filter>
         </activity>
         <activity
+            android:name=".HorizonFlatActivity"
+            android:exported="false"
+            android:screenOrientation="sensorLandscape"
+            android:launchMode="singleTask"
+            android:windowSoftInputMode="adjustNothing|stateHidden"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|keyboard|navigation|uiMode|density|smallestScreenSize|fontScale|locale|layoutDirection|touchscreen|mcc|mnc|colorMode|fontWeightAdjustment|grammaticalGender">
+            <meta-data android:name="android.app.lib_name" android:value="horizon" />
+        </activity>
+        <activity
             android:name=".ProfileActivity"
             android:exported="false"
             android:theme="@style/HorizonProfile"

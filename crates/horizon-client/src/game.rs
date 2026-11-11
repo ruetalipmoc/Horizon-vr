@@ -17408,7 +17408,8 @@ impl Game<'_> {
         let debug_passes = self.debug_lists_gpu_passes();
         let result = match self.renderer.as_mut() {
             Some(renderer) => {
-                renderer.set_pass_timing(debug_passes || self.gpu_passes);
+                // VR development builds time the passes for the frame report.
+                renderer.set_pass_timing(debug_passes || self.gpu_passes || vr_dev_timing());
                 // `gpu_passes` is a measurement: it takes every sample it can.
                 renderer.set_pass_timing_gap(if self.gpu_passes {
                     Duration::ZERO
@@ -20358,6 +20359,19 @@ fn vr_item_local(base: glam::Mat4) -> glam::Mat4 {
     use glam::{Mat4, Vec3};
     Mat4::from_scale(Vec3::splat(VR_ITEM_SCALE)) * Mat4::from_translation(-base.w_axis.truncate()) * base
 }
+/// VR is on (the headset shows the game).
+fn vr_active() -> bool {
+    #[cfg(target_os = "android")]
+    return horizon_xr::active();
+    #[cfg(not(target_os = "android"))]
+    false
+}
+
+/// VR development builds (that send their log) time the GPU's passes for the report.
+fn vr_dev_timing() -> bool {
+    vr_active() && option_env!("HORIZON_LOG_URL").is_some()
+}
+
 /// VR aims with the right controller: a crosshair in the middle of the view would lie.
 fn vr_hides_crosshair() -> bool {
     #[cfg(target_os = "android")]

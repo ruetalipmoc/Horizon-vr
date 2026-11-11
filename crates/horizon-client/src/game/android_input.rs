@@ -447,9 +447,66 @@ impl super::Game<'_> {
         s.mouse.push(MouseInput::Button(0, false));
         Some(target)
     }
+    /// VR: what the right hand does by being somewhere. Its tip inside a block mines it
+    /// (the attack held on that block); food or a potion brought to the mouth is eaten
+    /// or drunk (use held). Returns where to look while mining.
+    fn xr_hand_actions(&mut self) -> Option<[f64; 3]> {
+        static MINING: Mutex<Option<[i32; 3]>> = Mutex::new(None);
+        static EATING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        let playing = self.screen == super::Screen::Playing && self.title.is_none();
+        let place = playing
+            .then(|| {
+                let eye = self.eye_position()?;
+                let hand = horizon_xr::last_hands()?[horizon_xr::Hand::RightAim as usize]?;
+                Some((eye, [0, 1, 2].map(|i| eye[i] + f64::from(hand.offset[i]))))
+            })
+            .flatten();
+        let mut s = shared();
+        let mut mining = MINING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some((eye, tip)) = place else {
+            if mining.take().is_some() {
+                s.mouse.push(MouseInput::Button(0, false));
+            }
+            if EATING.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                s.mouse.push(MouseInput::Button(1, false));
+            }
+            return None;
+        };
+        // The mouth: a hand's width below the eyes.
+        let mouth = [eye[0], eye[1] - 0.12, eye[2]];
+        let near_mouth = (0..3).map(|i| (tip[i] - mouth[i]).powi(2)).sum::<f64>().sqrt() < 0.2;
+        let edible = near_mouth
+            && self.visible_hand_items()[0].as_ref().is_some_and(|stack| {
+                let components = self
+                    .pack
+                    .item_renderer
+                    .models
+                    .components(&horizon_client::item_render::stack_view(stack));
+                components.get("minecraft:consumable").is_some() || components.get("minecraft:food").is_some()
+            });
+        if EATING.swap(edible, std::sync::atomic::Ordering::Relaxed) != edible {
+            s.mouse.push(MouseInput::Button(1, edible));
+        }
+        let block = tip.map(|v| v.floor() as i32);
+        let solid = !edible && !self.res.facts().is_air(self.world.block(block[0], block[1], block[2]));
+        if solid {
+            if *mining != Some(block) {
+                if mining.is_some() {
+                    s.mouse.push(MouseInput::Button(0, false));
+                }
+                *mining = Some(block);
+                s.mouse.push(MouseInput::Button(0, true));
+            }
+            return Some(block.map(|v| f64::from(v) + 0.5));
+        }
+        if mining.take().is_some() {
+            s.mouse.push(MouseInput::Button(0, false));
+        }
+        None
+    }
     pub(super) fn xr_look(&mut self) {
         horizon_xr::set_menu(self.title.is_some() || self.screen != super::Screen::Playing);
-        if let Some(at) = self.xr_swing()
+        if let Some(at) = self.xr_hand_actions().or_else(|| self.xr_swing())
             && let Some(eye) = self.eye_position()
         {
             // Look at the mob being hit until the swing's click lands.
