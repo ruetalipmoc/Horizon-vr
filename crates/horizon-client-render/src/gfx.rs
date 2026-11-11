@@ -1529,9 +1529,15 @@ static ANDROID_SPLIT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicB
 /// Solid terrain in two passes (`Renderer::opaque_split`).
 fn split_solid_on(backend: wgpu::Backend, no_gpu_culling: bool) -> bool {
     backend == wgpu::Backend::Metal
-        || (cfg!(target_os = "android")
+        || ((cfg!(target_os = "android") || android_paths())
             && no_gpu_culling
             && ANDROID_SPLIT.load(std::sync::atomic::Ordering::Relaxed))
+}
+/// `HORIZON_ANDROID_PATHS` (development): the desktop takes Android's terrain paths
+/// (grouped meshes, Fast Opaque Pass) to check them without a device.
+fn android_paths() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("HORIZON_ANDROID_PATHS").is_some())
 }
 fn adapter_requested_split(info: &wgpu::AdapterInfo, requested: Option<u32>) -> Option<u32> {
     // Metal can fail to sample large mipmapped array textures despite advertising the layer limit.
@@ -4509,7 +4515,9 @@ impl Renderer {
         // their opaque quads first, so each pass draws its part in a run or two.
         // Phone GPUs are tilers too (Adreno, Mali, PowerVR): the same grouping, on Android.
         crate::mesher::group_parts(
-            adapter.get_info().backend == wgpu::Backend::Metal || cfg!(target_os = "android"),
+            adapter.get_info().backend == wgpu::Backend::Metal
+                || cfg!(target_os = "android")
+                || android_paths(),
         );
         // Readable as storage where flat draws run: a shader pack's terrain program reads them.
         let arena = arena::Arena::new(
@@ -5339,6 +5347,7 @@ impl Renderer {
         // VR: the pass drew no terrain from the eyes' views (the CPU's walk does).
         #[cfg(target_os = "android")]
         let on = on && !horizon_xr::active();
+        let on = on && fake_xr_fov().is_none();
         if !on {
             if self.gpu_culling.take().is_some() {
                 forget_records(&mut self.sections, self.layout.sections());
@@ -7405,7 +7414,31 @@ impl Renderer {
         if horizon_xr::active() {
             return self.render_xr(frame);
         }
+        if let Some(fov) = fake_xr_fov() {
+            return self.render_fake_xr(frame, fov);
+        }
         self.render_screen(frame)
+    }
+    /// `HORIZON_FAKE_XR` (development): the frame drawn as a headset's left eye would
+    /// be, from the camera's yaw and pitch, so VR drawing can be checked on a desktop.
+    fn render_fake_xr(&mut self, frame: &Frame, fov: [f32; 4]) -> Result<bool> {
+        let rotation = glam::Quat::from_rotation_y(std::f32::consts::PI - frame.yaw.to_radians())
+            * glam::Quat::from_rotation_x(-frame.pitch.to_radians());
+        let far = frame.depth_far;
+        let cull = eye_view(rotation, Vec3::ZERO, fov.map(|t| t * 1.15), far);
+        // Both eyes, the left first, as `render_xr` draws them: the frame shows the left.
+        let right_fov = [-fov[1], -fov[0], fov[2], fov[3]];
+        let mut drawn = Ok(false);
+        for (x, lens) in [(-0.032, fov), (0.032, right_fov)] {
+            let view = eye_view(rotation, rotation * Vec3::new(x, 0.0, 0.0), lens, far);
+            self.xr_view = Some(ViewSet::with_cull(view, cull));
+            drawn = self.render_screen(frame);
+            if std::env::var_os("HORIZON_FAKE_XR_ONE_EYE").is_some() {
+                break;
+            }
+        }
+        self.xr_view = None;
+        drawn
     }
     /// VR: waits for the headset's frame, draws `frame` once per eye and hands each
     /// eye's image to the headset. A frame the headset skips still takes in its uploads.
@@ -7458,6 +7491,20 @@ impl Renderer {
         }
         self.suspended = suspended;
         self.xr_view = None;
+        horizon_xr::note_renderer(|| {
+            format!(
+                "sections resident {}, drawn {}, draws {}, draw calls {}, culled {:?}, GPU \
+                 culling {}, size {}x{}",
+                self.resident_sections(),
+                self.drawn_sections,
+                self.section_draws,
+                self.section_draw_calls,
+                self.culled_sections(),
+                self.gpu_culling(),
+                self.config.width,
+                self.config.height,
+            )
+        });
         horizon_xr::end_frame(&self.queue);
         drawn
     }
@@ -12199,13 +12246,33 @@ fn off_centre_projection([left, right, up, down]: [f32; 4], far: f32) -> Mat4 {
 /// One eye of a headset: its rotation and offset from the camera, and its lens.
 #[cfg(target_os = "android")]
 fn xr_eye_view(eye: &horizon_xr::Eye, far: f32) -> View {
-    let [left, right, up, down] = eye.fov;
+    eye_view(eye.rotation, eye.offset, eye.fov, far)
+}
+
+/// A view from `offset` (camera-relative, world axes) turned by `rotation`, through the
+/// lens whose edges' tangents are `fov` (left, right, up, down).
+fn eye_view(rotation: glam::Quat, offset: Vec3, fov: [f32; 4], far: f32) -> View {
+    let [left, right, up, down] = fov;
     View {
-        view: Mat4::from_quat(eye.rotation.conjugate()) * Mat4::from_translation(-eye.offset),
-        projection: off_centre_projection(eye.fov, far),
+        view: Mat4::from_quat(rotation.conjugate()) * Mat4::from_translation(-offset),
+        projection: off_centre_projection(fov, far),
         aspect: (right - left) / (up - down),
         tan_half_fov: (up - down) / 2.0,
     }
+}
+
+/// `HORIZON_FAKE_XR`: a Quest 3 left eye's lens (`1`), or four tangents
+/// `left,right,up,down`; `None` when unset.
+fn fake_xr_fov() -> Option<[f32; 4]> {
+    static FOV: std::sync::OnceLock<Option<[f32; 4]>> = std::sync::OnceLock::new();
+    *FOV.get_or_init(|| {
+        let value = std::env::var("HORIZON_FAKE_XR").ok()?;
+        let parts: Vec<f32> = value.split(',').filter_map(|p| p.trim().parse().ok()).collect();
+        Some(match parts[..] {
+            [left, right, up, down] => [left, right, up, down],
+            _ => [-1.07, 0.81, 0.93, -1.14],
+        })
+    })
 }
 
 /// A view from the camera that sees everything either eye does, to cull with.

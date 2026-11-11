@@ -138,6 +138,8 @@ struct Stats {
     shown: u32,
     blank: u32,
     draws: std::collections::BTreeMap<&'static str, u32>,
+    /// The renderer's own counters at the last frame, for the report.
+    renderer: Option<String>,
 }
 
 impl Stats {
@@ -157,10 +159,22 @@ impl Stats {
             self.blank,
             self.draws
         );
+        if let Some(renderer) = &self.renderer {
+            log::info!("Horizon VR: renderer: {renderer}");
+        }
         *self = Self {
             since: Some(now),
             ..Self::default()
         };
+    }
+}
+
+/// The renderer's counters for the next report; `text` runs only when one is due soon.
+pub fn note_renderer(text: impl FnOnce() -> String) {
+    if let Some(s) = xr_state().as_mut().and_then(|x| x.session.as_mut())
+        && s.stats.since.is_some_and(|t| t.elapsed() > Duration::from_millis(1900))
+    {
+        s.stats.renderer = Some(text());
     }
 }
 
