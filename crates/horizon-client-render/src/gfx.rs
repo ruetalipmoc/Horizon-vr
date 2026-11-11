@@ -1070,6 +1070,8 @@ pub struct Renderer {
     /// VR: the eye being drawn (and the view culling covers both eyes with), set by
     /// `render_xr` around each eye's frame.
     xr_view: Option<ViewSet>,
+    /// VR: when the left eye was last saved for the developer (`render_xr`).
+    xr_snapshot: Option<Instant>,
     /// Offscreen submissions still on the GPU: at most two frames run ahead.
     in_flight: std::collections::VecDeque<wgpu::SubmissionIndex>,
     /// Splitscreen: the caller waits for the GPU once every player has submitted
@@ -4722,6 +4724,7 @@ impl Renderer {
             spare_surface: std::sync::Mutex::new(None),
             offscreen,
             xr_view: None,
+            xr_snapshot: None,
             in_flight: std::collections::VecDeque::new(),
             paced_elsewhere: false,
             first_frame: if previous.is_none() {
@@ -5333,6 +5336,9 @@ impl Renderer {
     /// sections' other walk marks (`SectionGpu::listed`) and the cave-culling
     /// graph's bits (`occlusion::Reach`), which are the same either way.
     pub fn set_gpu_culling(&mut self, on: bool) -> Result<()> {
+        // VR: the pass drew no terrain from the eyes' views (the CPU's walk does).
+        #[cfg(target_os = "android")]
+        let on = on && !horizon_xr::active();
         if !on {
             if self.gpu_culling.take().is_some() {
                 forget_records(&mut self.sections, self.layout.sections());
@@ -7423,6 +7429,19 @@ impl Renderer {
         let mut drawn = Ok(false);
         for (i, eye) in xr.eyes.iter().enumerate() {
             self.xr_view = Some(ViewSet::with_cull(xr_eye_view(eye, far), cull));
+            // Development builds that send their log (HORIZON_LOG_URL) also send what the
+            // left eye sees now and then: there is no other way to look at it.
+            if i == 0 && option_env!("HORIZON_LOG_URL").is_some() && self.screenshot.is_none() {
+                let due = self.xr_snapshot.is_none_or(|t| t.elapsed() > std::time::Duration::from_secs(10));
+                if due && let Some(home) = std::env::var_os("HORIZON_HOME") {
+                    self.xr_snapshot = Some(Instant::now());
+                    self.screenshot = Some(ScreenshotRequest {
+                        path: PathBuf::from(home).join("vr-eye.png"),
+                        size: None,
+                        scaled: false,
+                    });
+                }
+            }
             drawn = self.render_screen(frame);
             horizon_xr::note_draw(match &drawn {
                 Ok(true) => "drawn",

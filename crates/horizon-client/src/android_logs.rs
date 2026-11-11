@@ -70,7 +70,16 @@ fn upload(url: &str, home: &Path, logcat: mpsc::Receiver<String>) {
     let crashes = home.join("crash-reports");
     let mut offset = 0u64;
     let mut seen: Vec<PathBuf> = list(&crashes);
+    let eye = home.join("vr-eye.png");
+    let mut eye_sent = None;
     loop {
+        let modified = std::fs::metadata(&eye).and_then(|m| m.modified()).ok();
+        if modified.is_some() && modified != eye_sent {
+            if let Ok(body) = std::fs::read(&eye) {
+                send("eye.png", &body);
+            }
+            eye_sent = modified;
+        }
         if let Ok(mut file) = std::fs::File::open(&log) {
             let len = file.metadata().map(|m| m.len()).unwrap_or(0);
             if len < offset {

@@ -13,7 +13,9 @@ import urllib.parse
 ROOT = os.path.abspath(sys.argv[1])
 PORT = int(sys.argv[2]) if len(sys.argv) > 2 else 8000
 LOGS = os.path.join(ROOT, "logs")
-ALLOWED = {"latest.log", "logcat.txt", "crash.txt"}
+ALLOWED = {"latest.log", "logcat.txt", "crash.txt", "eye.png"}
+# Replaced on each post, not appended to.
+WHOLE = {"eye.png"}
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):
@@ -29,7 +31,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.send_error(404)
             return
         os.makedirs(LOGS, exist_ok=True)
-        with open(os.path.join(LOGS, name), "ab") as f:
+        with open(os.path.join(LOGS, name), "wb" if name in WHOLE else "ab") as f:
             f.write(body)
         self.send_response(204)
         self.end_headers()
