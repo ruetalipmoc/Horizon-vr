@@ -20318,9 +20318,13 @@ fn vr_hand_frame(left: bool) -> Option<glam::Mat4> {
     #[cfg(target_os = "android")]
     {
         let hands = horizon_xr::active().then(horizon_xr::last_hands).flatten()?;
-        let grip = if left { horizon_xr::Hand::LeftGrip } else { horizon_xr::Hand::RightGrip };
-        let hand = hands[grip as usize]?;
-        return Some(glam::Mat4::from_translation(hand.offset) * glam::Mat4::from_quat(hand.rotation));
+        use horizon_xr::Hand;
+        // The hand at the grip; the arm along where the controller points (the handle
+        // slants: along it, the arm hung down).
+        let (grip, aim) = if left { (Hand::LeftGrip, Hand::LeftAim) } else { (Hand::RightGrip, Hand::RightAim) };
+        let at = hands[grip as usize]?.offset;
+        let along = hands[aim as usize]?.rotation;
+        return Some(glam::Mat4::from_translation(at) * glam::Mat4::from_quat(along));
     }
     #[cfg(not(target_os = "android"))]
     {
@@ -20330,9 +20334,9 @@ fn vr_hand_frame(left: bool) -> Option<glam::Mat4> {
 }
 
 /// How long the player's arm is in VR, as a share of the model's (12 pixels).
-const VR_ARM_SCALE: f32 = 0.6;
+const VR_ARM_SCALE: f32 = 0.45;
 /// The held item's size in VR, as a share of the first-person view's.
-const VR_ITEM_SCALE: f32 = 0.6;
+const VR_ITEM_SCALE: f32 = 0.5;
 
 /// VR: the arm model (`first_person_arm`'s space: Minecraft's Y-down model, in
 /// blocks) straight back from the controller, its hand at the grip.

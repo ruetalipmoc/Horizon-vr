@@ -134,7 +134,8 @@ fn with_touch_controllers(mut pad: PadState, touch: horizon_xr::Pad) -> PadState
     }
     // Pointing at a menu, the right trigger clicks there (`xr_pointer`), not the pad.
     let touch = if horizon_xr::pointer().is_some() {
-        horizon_xr::Pad { triggers: [touch.triggers[0], 0.0], ..touch }
+        // ...and the right stick scrolls there (`xr_pointer`).
+        horizon_xr::Pad { triggers: [touch.triggers[0], 0.0], right: [0.0; 2], ..touch }
     } else {
         touch
     };
@@ -445,6 +446,25 @@ impl super::Game<'_> {
                 s.mouse.push(MouseInput::Move(at));
             }
         }
+        // The right stick, up or down, turns the wheel where it points: about eight notches
+        // a second pushed all the way.
+        static WHEEL: Mutex<(f32, Option<std::time::Instant>)> = Mutex::new((0.0, None));
+        let mut wheel = WHEEL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let now = std::time::Instant::now();
+        let dt = wheel.1.map_or(0.0, |t| now.duration_since(t).as_secs_f32().min(0.1));
+        wheel.1 = Some(now);
+        let stick = horizon_xr::pad().filter(|_| pointer.is_some()).map_or(0.0, |p| p.right[1]);
+        if stick.abs() > 0.3 {
+            wheel.0 += stick * 8.0 * dt;
+        } else {
+            wheel.0 = 0.0;
+        }
+        while wheel.0.abs() >= 1.0 {
+            let notch = wheel.0.signum();
+            wheel.0 -= notch;
+            s.mouse.push(MouseInput::Wheel([0.0, notch]));
+        }
+        drop(wheel);
         if CLICK.swap(click, std::sync::atomic::Ordering::Relaxed) != click {
             // The right grip held makes the click a shift-click (quick move), as the
             // keyboard's Shift does.

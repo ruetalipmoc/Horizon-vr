@@ -36,8 +36,8 @@ const MAX_LEAN: f32 = 0.5;
 const VIEW_TYPE: xr::ViewConfigurationType = xr::ViewConfigurationType::PRIMARY_STEREO;
 /// Menus show on a panel this far in front of where the head faced when they opened, and
 /// this wide, in metres.
-const MENU_DISTANCE: f32 = 1.6;
-const MENU_WIDTH: f32 = 1.6;
+const MENU_DISTANCE: f32 = 1.2;
+const MENU_WIDTH: f32 = 1.2;
 /// The HUD's panel, in front of the eyes, moving with the head.
 const HUD_DISTANCE: f32 = 1.2;
 const HUD_WIDTH: f32 = 1.3;
@@ -223,6 +223,8 @@ struct Session {
     pointer: Option<([f32; 2], bool, Vec3)>,
     /// The pointer's dot, drawn on the panel where it points.
     dot: blit::EyeChain,
+    /// The right controller's aim, steadied for pointing (`steady`).
+    steady_aim: Option<Quat>,
     /// The hotbar in the HUD's image (`set_hotbar`).
     hotbar: Option<Hotbar>,
     /// The hotbar slot the right controller touches on the wrist.
@@ -690,6 +692,7 @@ fn start_session(xr: &Xr, device: &wgpu::Device, raw_device: vk::Device) -> Resu
         world_hands: [None; 4],
         pointer: None,
         dot,
+        steady_aim: None,
         hotbar: None,
         wrist_slot: None,
         anchor: None,
@@ -807,14 +810,24 @@ pub fn begin_frame() -> Option<FrameViews> {
         s.menu_pose = Some(menu_pose(head_rotation, head_position));
     }
     let aspect = s.size[1] as f32 / s.size[0] as f32;
-    s.pointer = match (s.menu_open.then_some(s.menu_pose).flatten(), s.hands[Hand::RightAim as usize]) {
+    // A hand never holds still: small turns are steadied so the pointer rests on a slot,
+    // large ones followed at once.
+    s.steady_aim = s.hands[Hand::RightAim as usize].map(|(rotation, _)| match s.steady_aim {
+        Some(previous) => {
+            let follow = (previous.angle_between(rotation) / 0.06).clamp(0.12, 1.0);
+            previous.slerp(rotation, follow)
+        }
+        None => rotation,
+    });
+    let steady = s.steady_aim.zip(s.hands[Hand::RightAim as usize]).map(|(r, (_, p))| (r, p));
+    s.pointer = match (s.menu_open.then_some(s.menu_pose).flatten(), steady) {
         (Some(panel), Some((rotation, origin))) => {
             panel_hit(panel, MENU_WIDTH, MENU_WIDTH * aspect, origin, rotation * Vec3::NEG_Z)
                 .map(|(uv, at)| (uv, s.pad.triggers[1] > 0.5, at))
         }
         _ => None,
     };
-    s.wrist_slot = match (s.hotbar, s.hands[Hand::LeftGrip as usize], s.hands[Hand::RightAim as usize]) {
+    s.wrist_slot = match (s.hotbar, forearm(&s.hands), s.hands[Hand::RightAim as usize]) {
         (Some(hotbar), Some(left), Some((_, tip))) if !s.menu_open => {
             let (at, size) = wrist_quad(left, hotbar);
             let local = quat(at.orientation).inverse() * (tip - vec3(at.position));
@@ -863,7 +876,15 @@ fn panel_hit(panel: xr::Posef, width: f32, height: f32, origin: Vec3, direction:
     uv.iter().all(|c| (0.0..=1.0).contains(c)).then_some((uv, at))
 }
 
-/// The hotbar's panel on the left forearm for `left` (the grip's pose in LOCAL space):
+/// The left forearm in LOCAL space: the grip's position, the aim's direction (the
+/// controller's handle slants; the arm lies along where it points).
+fn forearm(hands: &[Option<(Quat, Vec3)>; 4]) -> Option<(Quat, Vec3)> {
+    let (_, position) = hands[Hand::LeftGrip as usize]?;
+    let (rotation, _) = hands[Hand::LeftAim as usize]?;
+    Some((rotation, position))
+}
+
+/// The hotbar's panel on the left forearm for `left` (the forearm's pose in LOCAL space):
 /// its pose (facing the forearm's inside, reading toward the hand) and size.
 fn wrist_quad((rotation, position): (Quat, Vec3), hotbar: Hotbar) -> (xr::Posef, [f32; 2]) {
     let turn = rotation * Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
@@ -1085,7 +1106,7 @@ pub fn end_frame(queue: &wgpu::Queue) {
             });
         // In play the hotbar goes to the left wrist and the head's panel keeps the rest.
         let wrist = (s.panel_drawn == Some(Panel::Head))
-            .then_some(s.hotbar.zip(s.hands[Hand::LeftGrip as usize]))
+            .then_some(s.hotbar.zip(forearm(&s.hands)))
             .flatten();
         if let Some((hotbar, left)) = wrist {
             let (at, size) = wrist_quad(left, hotbar);
