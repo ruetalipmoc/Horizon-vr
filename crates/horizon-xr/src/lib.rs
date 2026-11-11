@@ -102,6 +102,27 @@ static CONTEXT: OnceLock<Context> = OnceLock::new();
 
 static XR: Mutex<Option<Xr>> = Mutex::new(None);
 
+/// Input the game saw since the last report (`note_input`): Android key and motion
+/// events from controllers, and frames whose gamepad state had something held.
+static INPUT: [std::sync::atomic::AtomicU32; 3] = [
+    std::sync::atomic::AtomicU32::new(0),
+    std::sync::atomic::AtomicU32::new(0),
+    std::sync::atomic::AtomicU32::new(0),
+];
+
+/// What `note_input` counts.
+#[derive(Clone, Copy, Debug)]
+pub enum InputKind {
+    AndroidKey = 0,
+    AndroidMotion = 1,
+    PadHeld = 2,
+}
+
+/// Counts input for the frame report (development diagnostics).
+pub fn note_input(kind: InputKind) {
+    INPUT[kind as usize].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
 // Safety: every use of the OpenXR and Vulkan handles goes through the `XR` mutex.
 unsafe impl Send for Xr {}
 
@@ -169,6 +190,8 @@ struct Stats {
     renderer: Option<String>,
     /// The controllers at the last read, and whether reading them failed.
     pad: Option<Result<Pad, String>>,
+    /// The right hand's interaction profile and whether its stick action is active.
+    profile: Option<String>,
 }
 
 impl Stats {
@@ -200,6 +223,17 @@ impl Stats {
             Some(Err(e)) => log::warn!("Horizon VR: controllers not read: {e}"),
             None => log::info!("Horizon VR: controllers not read (no input focus)"),
         }
+        let counts = INPUT
+            .each_ref()
+            .map(|c| c.swap(0, std::sync::atomic::Ordering::Relaxed));
+        log::info!(
+            "Horizon VR: input: profile {}, Android controller keys {} and motions {}, frames \
+             with a gamepad input held {}",
+            self.profile.as_deref().unwrap_or("?"),
+            counts[0],
+            counts[1],
+            counts[2]
+        );
         *self = Self {
             since: Some(now),
             ..Self::default()
@@ -615,6 +649,21 @@ pub fn begin_frame() -> Option<FrameViews> {
         return None;
     }
     s.stats.waited += 1;
+    if s.stats.since.is_some_and(|t| t.elapsed() > Duration::from_millis(1900)) {
+        let profile = xr
+            .instance
+            .string_to_path("/user/hand/right")
+            .and_then(|hand| s.session.current_interaction_profile(hand))
+            .and_then(|p| {
+                if p == xr::Path::NULL {
+                    Ok("none".to_owned())
+                } else {
+                    xr.instance.path_to_string(p)
+                }
+            });
+        let active = s.actions.sticks[1].state(&s.session, xr::Path::NULL).map(|st| st.is_active);
+        s.stats.profile = Some(format!("{profile:?}, right stick active {active:?}"));
+    }
     if s.focused {
         let read = s.actions.read(&s.session);
         s.pad = read.clone().unwrap_or_default();
@@ -631,7 +680,10 @@ pub fn begin_frame() -> Option<FrameViews> {
             Some((views, head))
         })
         .flatten();
-    let Some((views, head)) = located.filter(|(views, _)| views.len() == 2) else {
+    let tracked = xr::SpaceLocationFlags::ORIENTATION_VALID | xr::SpaceLocationFlags::POSITION_VALID;
+    let Some((views, head)) = located.filter(|(views, head)| {
+        views.len() == 2 && head.location_flags.contains(tracked)
+    }) else {
         s.stats.skipped += 1;
         let _ = s
             .stream

@@ -103,10 +103,14 @@ pub(super) fn pad_state() -> PadState {
     }
     let pad = PadState { buttons: s.keys | s.hat, left: s.left, right: [right[0], -right[1]], triggers };
     drop(s);
-    match horizon_xr::pad() {
+    let pad = match horizon_xr::pad() {
         Some(touch) => with_touch_controllers(pad, touch),
         None => pad,
+    };
+    if pad.buttons != 0 || pad.left != [0.0; 2] || pad.right != [0.0; 2] || pad.triggers != [0.0; 2] {
+        horizon_xr::note_input(horizon_xr::InputKind::PadHeld);
     }
+    pad
 }
 
 /// VR: the Touch controllers on top of any other controller. Right stick turns (the head
@@ -247,6 +251,7 @@ fn filter(event: &InputEvent<'_>) -> bool {
                 || (source == SOURCE_DPAD
                     && matches!(code, Keycode::DpadUp | Keycode::DpadDown | Keycode::DpadLeft | Keycode::DpadRight));
             if from_pad {
+                horizon_xr::note_input(horizon_xr::InputKind::AndroidKey);
                 let Some(button) = pad_button(code) else {
                     // Home/Mode and the rest stay with the system.
                     return false;
@@ -288,6 +293,7 @@ fn filter(event: &InputEvent<'_>) -> bool {
         InputEvent::MotionEvent(motion) => {
             let source: u32 = motion.source().into();
             if has(source, SOURCE_JOYSTICK) {
+                horizon_xr::note_input(horizon_xr::InputKind::AndroidMotion);
                 if motion.action() != MotionAction::Move {
                     return true;
                 }
