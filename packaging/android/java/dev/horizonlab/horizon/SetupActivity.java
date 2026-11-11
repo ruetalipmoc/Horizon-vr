@@ -93,7 +93,8 @@ public class SetupActivity extends Activity
                 }
             }
         });
-        card.addView(pick, Ui.gap(this, 8));
+        // A build with the data pack's address needs no file picked by hand.
+        if (nativeDefaultUrl().isEmpty()) card.addView(pick, Ui.gap(this, 8));
         bar = new Ui.Bar(this);
         bar.setVisibility(View.GONE);
         card.addView(bar, Ui.gap(this, 18));

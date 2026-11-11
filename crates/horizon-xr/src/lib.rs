@@ -41,6 +41,23 @@ const MENU_WIDTH: f32 = 1.6;
 /// The HUD's panel, in front of the eyes, moving with the head.
 const HUD_DISTANCE: f32 = 1.2;
 const HUD_WIDTH: f32 = 1.3;
+/// The hotbar's panel on the inside of the left forearm: its width in metres, and where
+/// it sits from the left controller's grip (its axes: toward the elbow is +Z).
+const WRIST_WIDTH: f32 = 0.2;
+const WRIST_AT: Vec3 = Vec3::new(0.03, 0.01, 0.13);
+/// How near (metres) the right controller's tip must come to the wrist's hotbar to pick
+/// a slot.
+const WRIST_TOUCH: f32 = 0.06;
+
+/// Where the hotbar is in the HUD's image (pixels from the top left), set by the game
+/// each frame: the part shown on the wrist, the slots' row and each slot's width.
+#[derive(Clone, Copy, Debug)]
+pub struct Hotbar {
+    /// x, y, width, height of what the wrist shows (the hotbar, health, food, armour).
+    pub crop: [f32; 4],
+    /// The left edge and top of the first slot, a slot's width and the row's height.
+    pub slots: [f32; 4],
+}
 
 /// Where the HUD's panel (the game's 2D layer: HUD, menus, the title screen's buttons)
 /// shows this frame, over the eyes' view, transparent where it draws nothing.
@@ -204,6 +221,10 @@ struct Session {
     pointer: Option<([f32; 2], bool, Vec3)>,
     /// The pointer's dot, drawn on the panel where it points.
     dot: blit::EyeChain,
+    /// The hotbar in the HUD's image (`set_hotbar`).
+    hotbar: Option<Hotbar>,
+    /// The hotbar slot the right controller touches on the wrist.
+    wrist_slot: Option<usize>,
     /// Where the head started; leaning away from it moves the view.
     anchor: Option<Vec3>,
     /// The player's yaw minus the head's yaw in LOCAL space, in degrees.
@@ -666,6 +687,8 @@ fn start_session(xr: &Xr, device: &wgpu::Device, raw_device: vk::Device) -> Resu
         hands: [None; 4],
         pointer: None,
         dot,
+        hotbar: None,
+        wrist_slot: None,
         anchor: None,
         body_yaw: 0.0,
         last_yaw: None,
@@ -787,6 +810,25 @@ pub fn begin_frame() -> Option<FrameViews> {
         }
         _ => None,
     };
+    s.wrist_slot = match (s.hotbar, s.hands[Hand::LeftGrip as usize], s.hands[Hand::RightAim as usize]) {
+        (Some(hotbar), Some(left), Some((_, tip))) if !s.menu_open => {
+            let (at, size) = wrist_quad(left, hotbar);
+            let local = quat(at.orientation).inverse() * (tip - vec3(at.position));
+            let inside = local.z.abs() < WRIST_TOUCH
+                && local.x.abs() <= size[0] / 2.0
+                && local.y.abs() <= size[1] / 2.0;
+            inside.then(|| {
+                let [x, y, w, h] = hotbar.crop;
+                let px = x + (local.x / size[0] + 0.5) * w;
+                let py = y + (0.5 - local.y / size[1]) * h;
+                let [first, top, slot, row] = hotbar.slots;
+                let index = ((px - first) / slot).floor();
+                (py >= top && py <= top + row && (0.0..9.0).contains(&index)).then_some(index as usize)
+            })
+            .flatten()
+        }
+        _ => None,
+    };
     s.pending = Some((state, views));
     s.eye_drawn = [false; 2];
     s.panel_drawn = None;
@@ -815,6 +857,34 @@ fn panel_hit(panel: xr::Posef, width: f32, height: f32, origin: Vec3, direction:
     let local = rotation.inverse() * (at - centre);
     let uv = [local.x / width + 0.5, 0.5 - local.y / height];
     uv.iter().all(|c| (0.0..=1.0).contains(c)).then_some((uv, at))
+}
+
+/// The hotbar's panel on the left forearm for `left` (the grip's pose in LOCAL space):
+/// its pose (facing the forearm's inside, reading toward the hand) and size.
+fn wrist_quad((rotation, position): (Quat, Vec3), hotbar: Hotbar) -> (xr::Posef, [f32; 2]) {
+    let turn = rotation * Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+    let size = [WRIST_WIDTH, WRIST_WIDTH * hotbar.crop[3] / hotbar.crop[2].max(1.0)];
+    (pose(turn, position + rotation * WRIST_AT), size)
+}
+
+/// Where the hotbar is in the HUD's image this frame (the game knows its GUI scale).
+pub fn set_hotbar(hotbar: Option<Hotbar>) {
+    if let Some(s) = xr_state().as_mut().and_then(|x| x.session.as_mut()) {
+        s.hotbar = hotbar;
+    }
+}
+
+/// The hotbar slot the right controller's tip touches on the left wrist.
+pub fn wrist_slot() -> Option<usize> {
+    xr_state().as_ref()?.session.as_ref()?.wrist_slot
+}
+
+/// The right controller's grip is squeezed (a shift-click while pointing at a menu).
+pub fn right_grip_held() -> bool {
+    xr_state()
+        .as_ref()
+        .and_then(|x| x.session.as_ref())
+        .is_some_and(|s| s.pad.right_grip)
 }
 
 /// Where the right controller points on the open menu's panel, in texture coordinates
@@ -1003,7 +1073,56 @@ pub fn end_frame(queue: &wgpu::Queue) {
                 width: 0.015,
                 height: 0.015,
             });
-        if s.panel_drawn.is_some() && dot_at.is_some() {
+        // In play the hotbar goes to the left wrist and the head's panel keeps the rest.
+        let wrist = (s.panel_drawn == Some(Panel::Head))
+            .then_some(s.hotbar.zip(s.hands[Hand::LeftGrip as usize]))
+            .flatten();
+        if let Some((hotbar, left)) = wrist {
+            let (at, size) = wrist_quad(left, hotbar);
+            let [x, y, w, h] = hotbar.crop.map(|v| v.round() as i32);
+            let crop = xr::Rect2Di {
+                offset: xr::Offset2Di { x, y },
+                extent: xr::Extent2Di { width: w.max(1), height: h.max(1) },
+            };
+            let wrist = xr::CompositionLayerQuad::new()
+                .space(&s.local)
+                .layer_flags(xr::CompositionLayerFlags::BLEND_TEXTURE_SOURCE_ALPHA)
+                .eye_visibility(xr::EyeVisibility::BOTH)
+                .sub_image(
+                    xr::SwapchainSubImage::new()
+                        .swapchain(&s.panel.handle)
+                        .image_array_index(0)
+                        .image_rect(crop),
+                )
+                .pose(at)
+                .size(xr::Extent2Df { width: size[0], height: size[1] });
+            let top = xr::Rect2Di {
+                offset: xr::Offset2Di { x: 0, y: 0 },
+                extent: xr::Extent2Di { width: s.size[0] as i32, height: y.max(1) },
+            };
+            let head_height = HUD_WIDTH * y.max(1) as f32 / s.size[0] as f32;
+            let head = xr::CompositionLayerQuad::new()
+                .space(&s.view)
+                .layer_flags(xr::CompositionLayerFlags::BLEND_TEXTURE_SOURCE_ALPHA)
+                .eye_visibility(xr::EyeVisibility::BOTH)
+                .sub_image(
+                    xr::SwapchainSubImage::new()
+                        .swapchain(&s.panel.handle)
+                        .image_array_index(0)
+                        .image_rect(top),
+                )
+                // The full panel's top part, where it was.
+                .pose(pose(
+                    Quat::IDENTITY,
+                    Vec3::new(0.0, (HUD_WIDTH * aspect - head_height) / 2.0, -HUD_DISTANCE),
+                ))
+                .size(xr::Extent2Df { width: HUD_WIDTH, height: head_height });
+            s.stream.end(
+                state.predicted_display_time,
+                xr::EnvironmentBlendMode::OPAQUE,
+                &[&layer, &head, &wrist],
+            )
+        } else if s.panel_drawn.is_some() && dot_at.is_some() {
             s.stream.end(
                 state.predicted_display_time,
                 xr::EnvironmentBlendMode::OPAQUE,

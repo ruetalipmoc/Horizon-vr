@@ -12415,6 +12415,9 @@ fn fake_xr_fov() -> Option<[f32; 4]> {
 /// vanilla's right arm and held item, about.
 #[cfg(target_os = "android")]
 const XR_HAND_ANCHOR: Vec3 = Vec3::new(0.45, -0.45, -0.6);
+/// The game's hand and item are made for a screen: at hand's length they look huge.
+#[cfg(target_os = "android")]
+const XR_HAND_SCALE: f32 = 0.4;
 
 /// VR: camera-relative world to camera-relative world, moving the hand the game built
 /// before its camera (`camera_view`: the game's own yaw and pitch) onto the controller.
@@ -12422,6 +12425,7 @@ const XR_HAND_ANCHOR: Vec3 = Vec3::new(0.45, -0.45, -0.6);
 fn xr_hand_model(hand: horizon_xr::HandPose, camera_view: Mat4) -> Mat4 {
     Mat4::from_translation(hand.offset)
         * Mat4::from_quat(hand.rotation)
+        * Mat4::from_scale(Vec3::splat(XR_HAND_SCALE))
         * Mat4::from_translation(-XR_HAND_ANCHOR)
         * camera_view
 }

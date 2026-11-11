@@ -399,6 +399,28 @@ impl super::Game<'_> {
     pub(super) fn xr_look(&mut self) {
         horizon_xr::set_menu(self.title.is_some() || self.screen != super::Screen::Playing);
         horizon_xr::note_controller_setting(self.settings.controller.enabled);
+        // The hotbar on the left wrist: where it is in the HUD's image, and the slot the
+        // right controller touches there.
+        let hotbar = self.renderer.as_ref().filter(|_| self.title.is_none()).map(|r| {
+            let scale = horizon_client::hud::HudBatch::new([r.config.width, r.config.height]).scale;
+            let (w, h) = (r.config.width as f32, r.config.height as f32);
+            let left = w / 2.0 - 91.0 * scale;
+            horizon_xr::Hotbar {
+                crop: [left - 2.0 * scale, h - 52.0 * scale, 186.0 * scale, 52.0 * scale],
+                slots: [left + 1.0 * scale, h - 22.0 * scale, 20.0 * scale, 22.0 * scale],
+            }
+        });
+        horizon_xr::set_hotbar(hotbar);
+        static TOUCHED: Mutex<Option<usize>> = Mutex::new(None);
+        let touched = horizon_xr::wrist_slot();
+        let mut last = TOUCHED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if touched != *last {
+            *last = touched;
+            if let Some(slot) = touched {
+                self.hotbar_presses.push(slot);
+            }
+        }
+        drop(last);
         let Some((yaw, pitch)) = horizon_xr::look(self.yaw) else {
             return;
         };
@@ -424,6 +446,13 @@ impl super::Game<'_> {
             }
         }
         if CLICK.swap(click, std::sync::atomic::Ordering::Relaxed) != click {
+            // The right grip held makes the click a shift-click (quick move), as the
+            // keyboard's Shift does.
+            if click && horizon_xr::right_grip_held() {
+                self.modifiers = winit::keyboard::ModifiersState::SHIFT;
+            } else if !click {
+                self.modifiers = winit::keyboard::ModifiersState::empty();
+            }
             s.mouse.push(MouseInput::Button(0, click));
         }
     }

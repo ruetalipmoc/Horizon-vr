@@ -9268,6 +9268,7 @@ impl Game<'_> {
                 && (!spectator || self.spectator_crosshair())
                 && !self.debug_crosshair()
                 && !self.touch_hides_crosshair()
+                && !vr_hides_crosshair()
             {
                 let attack = (indicator == 1).then_some(strength);
                 let full = attack.is_some_and(|a| {
@@ -20287,6 +20288,13 @@ impl Game<'_> {
             Instant::now(),
         ));
     }
+}
+/// VR aims with the right controller: a crosshair in the middle of the view would lie.
+fn vr_hides_crosshair() -> bool {
+    #[cfg(target_os = "android")]
+    return horizon_xr::active();
+    #[cfg(not(target_os = "android"))]
+    false
 }
 /// clouds.png as filled cells (`CloudRenderer.prepare`: alpha 10 or more).
 fn load_clouds(root: &std::path::Path) -> (u32, u32, Vec<bool>) {
