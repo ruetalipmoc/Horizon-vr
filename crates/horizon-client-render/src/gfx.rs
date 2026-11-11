@@ -1070,6 +1070,9 @@ pub struct Renderer {
     /// VR: the eye being drawn (and the view culling covers both eyes with), set by
     /// `render_xr` around each eye's frame.
     xr_view: Option<ViewSet>,
+    /// VR: the lens of the eye being drawn (tangents left, right, up, down), for the
+    /// title panorama.
+    xr_eye_fov: Option<[f32; 4]>,
     /// VR: when the left eye was last saved for the developer (`render_xr`).
     xr_snapshot: Option<Instant>,
     /// VR: the eyes are drawn without the HUD, which goes to its own panel.
@@ -4750,6 +4753,7 @@ impl Renderer {
             spare_surface: std::sync::Mutex::new(None),
             offscreen,
             xr_view: None,
+            xr_eye_fov: None,
             xr_snapshot: None,
             xr_hud_skip: false,
             xr_hud: None,
@@ -7479,29 +7483,19 @@ impl Renderer {
         // The headset shows the frames, not the window: a window Android hid (the
         // immersive activity has none on screen) does not stop them.
         let suspended = std::mem::replace(&mut self.suspended, false);
-        // A menu, the title screen or a loading screen: drawn once, flat, onto a panel
-        // in the room.
-        if frame.title || horizon_xr::menu_open() {
-            self.xr_dev_snapshot();
-            let drawn = self.render_screen(frame);
-            horizon_xr::note_draw(match &drawn {
-                Ok(true) => "menu drawn",
-                Ok(false) => "menu not drawn",
-                Err(_) => "menu failed",
-            });
-            if matches!(drawn, Ok(true))
-                && let Some(target) = &self.offscreen
-            {
-                horizon_xr::submit_panel(horizon_xr::Panel::Menu, &self.queue, target);
-            }
-            self.suspended = suspended;
-            horizon_xr::end_frame(&self.queue);
-            return drawn;
-        }
+        // A menu, the title screen or a loading screen goes to a panel fixed in the room,
+        // with the world (or the title panorama) around it; in play the HUD rides before
+        // the eyes.
+        let panel = if frame.title || horizon_xr::menu_open() {
+            horizon_xr::Panel::Room
+        } else {
+            horizon_xr::Panel::Head
+        };
         self.xr_hud_skip = true;
         let mut drawn = Ok(false);
         for (i, eye) in xr.eyes.iter().enumerate() {
             self.xr_view = Some(ViewSet::with_cull(xr_eye_view(eye, far), cull));
+            self.xr_eye_fov = Some(eye.fov);
             if i == 0 {
                 self.xr_dev_snapshot();
             }
@@ -7520,8 +7514,9 @@ impl Renderer {
             }
         }
         self.xr_hud_skip = false;
+        self.xr_eye_fov = None;
         if matches!(drawn, Ok(true)) {
-            self.xr_draw_hud(frame);
+            self.xr_draw_hud(frame, panel);
         }
         self.suspended = suspended;
         self.xr_view = None;
@@ -7563,7 +7558,7 @@ impl Renderer {
     }
     /// VR: the frame's HUD alone, on a clear image, for its panel.
     #[cfg(target_os = "android")]
-    fn xr_draw_hud(&mut self, frame: &Frame) {
+    fn xr_draw_hud(&mut self, frame: &Frame, panel: horizon_xr::Panel) {
         let size = [self.config.width, self.config.height];
         let fits = self
             .xr_hud
@@ -7617,7 +7612,7 @@ impl Renderer {
             None,
         );
         self.queue.submit([encoder.finish()]);
-        horizon_xr::submit_panel(horizon_xr::Panel::Hud, &self.queue, texture);
+        horizon_xr::submit_panel(panel, &self.queue, texture);
     }
     fn render_screen(&mut self, frame: &Frame) -> Result<bool> {
         crate::sdk_post::capture(frame);
@@ -7961,14 +7956,22 @@ impl Renderer {
         );
         let jittered = jitter * view_proj;
         if frame.title {
-            self.panorama.prepare(
-                &self.device,
-                &self.queue,
-                self.config.width,
-                self.config.height,
-                frame.yaw,
-                frame.pitch,
-            );
+            match (self.xr_view, self.xr_eye_fov) {
+                // VR: the cube around the head, through the eye's own lens.
+                (Some(views), Some(fov)) => self.panorama.prepare_matrix(
+                    &self.device,
+                    &self.queue,
+                    panorama::eye_matrix(views.primary().view, fov),
+                ),
+                _ => self.panorama.prepare(
+                    &self.device,
+                    &self.queue,
+                    self.config.width,
+                    self.config.height,
+                    frame.yaw,
+                    frame.pitch,
+                ),
+            }
         } else {
             self.panorama.release();
         }

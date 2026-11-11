@@ -181,6 +181,18 @@ fn projection(width: u32, height: u32, yaw: f32, pitch: f32) -> Mat4 {
         * Mat4::from_rotation_y(yaw.to_radians())
 }
 
+/// VR: `projection`'s cube as an eye sees it, the eye given by its camera-relative
+/// `view` (only its rotation counts) and its lens' tangents (left, right, up, down).
+/// The same chain as `projection`, the eye's rotation for the camera's; under its
+/// `rotationX(PI)` up is down, so the lens is flipped vertically.
+pub(super) fn eye_matrix(view: Mat4, [left, right, up, down]: [f32; 4]) -> Mat4 {
+    let rotation = Mat4::from_mat3(glam::Mat3::from_mat4(view));
+    super::off_centre_projection([left, right, -down, -up], 10.0)
+        * Mat4::from_rotation_x(std::f32::consts::PI)
+        * rotation
+        * Mat4::from_rotation_y(std::f32::consts::PI)
+}
+
 pub(super) struct Panorama {
     pipeline: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
@@ -309,6 +321,14 @@ impl Panorama {
             0,
             bytemuck::cast_slice(&projection(width, height, yaw, pitch).to_cols_array()),
         );
+        if self.cube.is_none() {
+            self.cube = Some(self.cube(device, queue));
+        }
+    }
+
+    /// `prepare` with the whole matrix given (`eye_matrix`).
+    pub(super) fn prepare_matrix(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, matrix: Mat4) {
+        queue.write_buffer(&self.uniform, 0, bytemuck::cast_slice(&matrix.to_cols_array()));
         if self.cube.is_none() {
             self.cube = Some(self.cube(device, queue));
         }

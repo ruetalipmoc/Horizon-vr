@@ -42,14 +42,15 @@ const MENU_WIDTH: f32 = 1.6;
 const HUD_DISTANCE: f32 = 1.2;
 const HUD_WIDTH: f32 = 1.3;
 
-/// What the flat panel shows this frame.
+/// Where the HUD's panel (the game's 2D layer: HUD, menus, the title screen's buttons)
+/// shows this frame, over the eyes' view, transparent where it draws nothing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Panel {
-    /// A menu, a loading screen or the title screen: the whole frame, opaque, fixed in
-    /// the room. The eyes are not drawn.
-    Menu,
-    /// The HUD over the eyes' view, transparent where it draws nothing.
-    Hud,
+    /// Fixed in the room where the head faced when the menu opened (menus, the title
+    /// and loading screens).
+    Room,
+    /// Before the eyes, moving with the head (the HUD in play).
+    Head,
 }
 
 /// The Touch controllers read as a gamepad.
@@ -698,11 +699,10 @@ pub fn submit_panel(kind: Panel, queue: &wgpu::Queue, frame: &wgpu::Texture) {
     if s.pending.is_none() {
         return;
     }
-    let blit = match kind {
-        Panel::Menu => &s.blit,
-        Panel::Hud => &s.blit_alpha,
-    };
-    match s.panel.draw(&s.device, queue, blit, frame) {
+    if kind == Panel::Room && s.menu_pose.is_none() {
+        s.menu_pose = s.head.map(|(rotation, position)| menu_pose(rotation, position));
+    }
+    match s.panel.draw(&s.device, queue, &s.blit_alpha, frame) {
         Ok(()) => s.panel_drawn = Some(kind),
         Err(e) => log::warn!("Horizon VR: panel: {e}"),
     }
@@ -750,9 +750,8 @@ pub fn end_frame(queue: &wgpu::Queue) {
             height: s.size[1] as i32,
         },
     };
-    let menu = s.panel_drawn == Some(Panel::Menu);
     for eye in 0..2 {
-        if !menu && !s.eye_drawn[eye] {
+        if !s.eye_drawn[eye] {
             s.stats.blank += 1;
             match s.eyes[eye].fill(&s.device, queue, wgpu::Color { r: 0.25, g: 0.0, b: 0.0, a: 1.0 }) {
                 Ok(()) => s.eye_drawn[eye] = true,
@@ -761,30 +760,7 @@ pub fn end_frame(queue: &wgpu::Queue) {
         }
     }
     let aspect = s.size[1] as f32 / s.size[0] as f32;
-    let panel_rect = rect;
-    let result = if menu {
-        s.stats.shown += 1;
-        let at = s.menu_pose.unwrap_or_else(|| pose(Quat::IDENTITY, Vec3::new(0.0, 0.0, -MENU_DISTANCE)));
-        let layer = xr::CompositionLayerQuad::new()
-            .space(&s.local)
-            .eye_visibility(xr::EyeVisibility::BOTH)
-            .sub_image(
-                xr::SwapchainSubImage::new()
-                    .swapchain(&s.panel.handle)
-                    .image_array_index(0)
-                    .image_rect(panel_rect),
-            )
-            .pose(at)
-            .size(xr::Extent2Df {
-                width: MENU_WIDTH,
-                height: MENU_WIDTH * aspect,
-            });
-        s.stream.end(
-            state.predicted_display_time,
-            xr::EnvironmentBlendMode::OPAQUE,
-            &[&layer],
-        )
-    } else if s.eye_drawn == [true; 2] {
+    let result = if s.eye_drawn == [true; 2] {
         s.stats.shown += 1;
         let projection_views = [0, 1].map(|i| {
             xr::CompositionLayerProjectionView::new()
@@ -800,26 +776,39 @@ pub fn end_frame(queue: &wgpu::Queue) {
         let layer = xr::CompositionLayerProjection::new()
             .space(&s.local)
             .views(&projection_views);
-        let hud = xr::CompositionLayerQuad::new()
-            .space(&s.view)
+        let (space, at, width) = match s.panel_drawn {
+            Some(Panel::Room) => (
+                &s.local,
+                s.menu_pose
+                    .unwrap_or_else(|| pose(Quat::IDENTITY, Vec3::new(0.0, 0.0, -MENU_DISTANCE))),
+                MENU_WIDTH,
+            ),
+            _ => (
+                &s.view,
+                pose(Quat::IDENTITY, Vec3::new(0.0, 0.0, -HUD_DISTANCE)),
+                HUD_WIDTH,
+            ),
+        };
+        let panel = xr::CompositionLayerQuad::new()
+            .space(space)
             .layer_flags(xr::CompositionLayerFlags::BLEND_TEXTURE_SOURCE_ALPHA)
             .eye_visibility(xr::EyeVisibility::BOTH)
             .sub_image(
                 xr::SwapchainSubImage::new()
                     .swapchain(&s.panel.handle)
                     .image_array_index(0)
-                    .image_rect(panel_rect),
+                    .image_rect(rect),
             )
-            .pose(pose(Quat::IDENTITY, Vec3::new(0.0, 0.0, -HUD_DISTANCE)))
+            .pose(at)
             .size(xr::Extent2Df {
-                width: HUD_WIDTH,
-                height: HUD_WIDTH * aspect,
+                width,
+                height: width * aspect,
             });
-        if s.panel_drawn == Some(Panel::Hud) {
+        if s.panel_drawn.is_some() {
             s.stream.end(
                 state.predicted_display_time,
                 xr::EnvironmentBlendMode::OPAQUE,
-                &[&layer, &hud],
+                &[&layer, &panel],
             )
         } else {
             s.stream.end(
