@@ -7413,10 +7413,18 @@ impl Renderer {
         }
         let far = frame.depth_far;
         let cull = xr_cull_view(&xr.eyes, far);
+        // The headset shows the frames, not the window: a window Android hid (the
+        // immersive activity has none on screen) does not stop them.
+        let suspended = std::mem::replace(&mut self.suspended, false);
         let mut drawn = Ok(false);
         for (i, eye) in xr.eyes.iter().enumerate() {
             self.xr_view = Some(ViewSet::with_cull(xr_eye_view(eye, far), cull));
             drawn = self.render_screen(frame);
+            horizon_xr::note_draw(match &drawn {
+                Ok(true) => "drawn",
+                Ok(false) => "not drawn",
+                Err(_) => "failed",
+            });
             if !matches!(drawn, Ok(true)) {
                 break;
             }
@@ -7424,8 +7432,9 @@ impl Renderer {
                 horizon_xr::submit_eye(i, &self.queue, target);
             }
         }
+        self.suspended = suspended;
         self.xr_view = None;
-        horizon_xr::end_frame();
+        horizon_xr::end_frame(&self.queue);
         drawn
     }
     fn render_screen(&mut self, frame: &Frame) -> Result<bool> {

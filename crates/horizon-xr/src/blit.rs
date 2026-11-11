@@ -105,6 +105,45 @@ impl EyeChain {
         Ok(Self { handle, views })
     }
 
+    /// Acquires the next image, fills it with `color` and gives it back.
+    pub fn fill(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        color: wgpu::Color,
+    ) -> Result<(), String> {
+        let index = self
+            .handle
+            .acquire_image()
+            .map_err(|e| format!("xrAcquireSwapchainImage: {e}"))? as usize;
+        self.handle
+            .wait_image(xr::Duration::INFINITE)
+            .map_err(|e| format!("xrWaitSwapchainImage: {e}"))?;
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Horizon VR fill"),
+        });
+        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Horizon VR fill"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &self.views[index],
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(color),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        queue.submit([encoder.finish()]);
+        self.handle
+            .release_image()
+            .map_err(|e| format!("xrReleaseSwapchainImage: {e}"))
+    }
+
     /// Acquires the next image, draws `frame` into it and gives it back.
     pub fn draw(
         &mut self,

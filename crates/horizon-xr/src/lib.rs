@@ -126,6 +126,49 @@ struct Session {
     body_yaw: f32,
     /// The yaw `look` last gave the player; `None` until the first look.
     last_yaw: Option<f32>,
+    stats: Stats,
+}
+
+/// What happened to the frames since the last report, logged every few seconds.
+#[derive(Default)]
+struct Stats {
+    since: Option<std::time::Instant>,
+    waited: u32,
+    skipped: u32,
+    shown: u32,
+    blank: u32,
+    draws: std::collections::BTreeMap<&'static str, u32>,
+}
+
+impl Stats {
+    fn report(&mut self) {
+        let now = std::time::Instant::now();
+        let since = *self.since.get_or_insert(now);
+        if now.duration_since(since) < Duration::from_secs(2) {
+            return;
+        }
+        log::info!(
+            "Horizon VR: {:.1}s: {} frames waited, {} skipped by the runtime, {} shown, {} \
+             blank (eye not drawn); eye draws {:?}",
+            now.duration_since(since).as_secs_f32(),
+            self.waited,
+            self.skipped,
+            self.shown,
+            self.blank,
+            self.draws
+        );
+        *self = Self {
+            since: Some(now),
+            ..Self::default()
+        };
+    }
+}
+
+/// Counts what the renderer did with an eye, for the frame report.
+pub fn note_draw(outcome: &'static str) {
+    if let Some(s) = xr_state().as_mut().and_then(|x| x.session.as_mut()) {
+        *s.stats.draws.entry(outcome).or_default() += 1;
+    }
 }
 
 /// Set by `android_main` before the renderer starts.
@@ -487,6 +530,7 @@ fn start_session(xr: &Xr, device: &wgpu::Device, raw_device: vk::Device) -> Resu
         anchor: None,
         body_yaw: 0.0,
         last_yaw: None,
+        stats: Stats::default(),
     })
 }
 
@@ -505,6 +549,7 @@ pub fn begin_frame() -> Option<FrameViews> {
         std::thread::sleep(Duration::from_millis(20));
         return None;
     }
+    s.stats.report();
     let state = match s.waiter.wait() {
         Ok(state) => state,
         Err(e) => {
@@ -516,6 +561,7 @@ pub fn begin_frame() -> Option<FrameViews> {
         log::warn!("Horizon VR: xrBeginFrame: {e}");
         return None;
     }
+    s.stats.waited += 1;
     if s.focused {
         s.pad = s.actions.read(&s.session).unwrap_or_default();
     }
@@ -531,6 +577,7 @@ pub fn begin_frame() -> Option<FrameViews> {
         })
         .flatten();
     let Some((views, head)) = located.filter(|(views, _)| views.len() == 2) else {
+        s.stats.skipped += 1;
         let _ = s
             .stream
             .end(state.predicted_display_time, xr::EnvironmentBlendMode::OPAQUE, &[]);
@@ -577,8 +624,9 @@ pub fn submit_eye(eye: usize, queue: &wgpu::Queue, frame: &wgpu::Texture) {
     }
 }
 
-/// Shows the frame `begin_frame` started (both eyes, if both were submitted).
-pub fn end_frame() {
+/// Shows the frame `begin_frame` started. An eye the game did not draw shows dark red,
+/// so a frame that never came is told apart from a black one.
+pub fn end_frame(queue: &wgpu::Queue) {
     let mut guard = xr_state();
     let Some(s) = guard.as_mut().and_then(|x| x.session.as_mut()) else {
         return;
@@ -593,7 +641,17 @@ pub fn end_frame() {
             height: s.size[1] as i32,
         },
     };
+    for eye in 0..2 {
+        if !s.eye_drawn[eye] {
+            s.stats.blank += 1;
+            match s.eyes[eye].fill(&s.device, queue, wgpu::Color { r: 0.25, g: 0.0, b: 0.0, a: 1.0 }) {
+                Ok(()) => s.eye_drawn[eye] = true,
+                Err(e) => log::warn!("Horizon VR: eye {eye}: {e}"),
+            }
+        }
+    }
     let result = if s.eye_drawn == [true; 2] {
+        s.stats.shown += 1;
         let projection_views = [0, 1].map(|i| {
             xr::CompositionLayerProjectionView::new()
                 .pose(views[i].pose)

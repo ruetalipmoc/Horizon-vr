@@ -696,6 +696,12 @@ impl Game<'_> {
         if self.options.frames.is_some() || self.options.paced_by_split {
             return;
         }
+        // VR: the headset paces frames (xrWaitFrame). A menu's 60 or an idle player's 10
+        // would drop frames the headset is waiting for, and moving the head is not input.
+        #[cfg(target_os = "android")]
+        if horizon_xr::active() {
+            return;
+        }
         let limit = self.framerate_limit();
         match self.settings.horizon.pacing {
             horizon_client::graphics::Pacing::Precise => {

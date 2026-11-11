@@ -18556,6 +18556,13 @@ impl ApplicationHandler for Game<'_> {
         // Home or another app: the game freezes. A world opens the pause menu (single player
         // stops its server ticking), the sound output stops and the loop sleeps until the
         // window is back.
+        // VR: the immersive activity's window goes away while the headset shows the game;
+        // the session's own states (horizon_xr) say when it is really in the background.
+        #[cfg(target_os = "android")]
+        if horizon_xr::active() {
+            log::info!("Horizon VR: the window went away; the headset keeps showing the game");
+            return;
+        }
         #[cfg(target_os = "android")]
         {
             ANDROID_BACKGROUND.store(true, Ordering::Relaxed);
