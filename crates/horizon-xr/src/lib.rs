@@ -249,6 +249,11 @@ pub fn pad() -> Option<Pad> {
 /// the usual way (not a headset, no runtime, or VR failed to start last time).
 pub fn instance_and_adapter() -> Option<(wgpu::Instance, wgpu::Adapter)> {
     let ctx = CONTEXT.get()?;
+    // `HORIZON_XR=0`: flat, as on a phone (A/B checks on a headset).
+    if std::env::var("HORIZON_XR").as_deref() == Ok("0") {
+        log::info!("Horizon VR: off (HORIZON_XR=0)");
+        return None;
+    }
     // Tried already (the renderer retries backends): the instance is made once.
     if xr_state().is_some() {
         return None;

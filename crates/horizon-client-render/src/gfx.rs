@@ -2679,7 +2679,12 @@ impl Renderer {
             }
             (config, caps.present_modes.clone(), hdr_output)
         } else {
-            let format = wgpu::TextureFormat::Bgra8Unorm;
+            // `HORIZON_OFFSCREEN_FORMAT=rgba` (A/B checks): RGBA instead of BGRA.
+            let format = if std::env::var("HORIZON_OFFSCREEN_FORMAT").as_deref() == Ok("rgba") {
+                wgpu::TextureFormat::Rgba8Unorm
+            } else {
+                wgpu::TextureFormat::Bgra8Unorm
+            };
             // VR: the frame is an eye's image, which the eyes' copy pass samples.
             #[cfg(target_os = "android")]
             let xr_eyes = horizon_xr::eye_size();
@@ -4610,9 +4615,11 @@ impl Renderer {
                 );
                 visbuffer::Visbuffer::new(&device, &bindings, f, frame_format, &sprite_constants)
             });
-        let multi_draw = device
-            .features()
-            .contains(wgpu::Features::INDIRECT_FIRST_INSTANCE)
+        // `HORIZON_MULTI_DRAW=0` (A/B checks): one draw per section and run.
+        let multi_draw = std::env::var("HORIZON_MULTI_DRAW").as_deref() != Ok("0")
+            && device
+                .features()
+                .contains(wgpu::Features::INDIRECT_FIRST_INSTANCE)
             && adapter
                 .get_downlevel_capabilities()
                 .flags

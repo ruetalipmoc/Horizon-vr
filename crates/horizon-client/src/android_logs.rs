@@ -12,6 +12,40 @@ use std::time::Duration;
 const URL: Option<&str> = option_env!("HORIZON_LOG_URL");
 const EVERY: Duration = Duration::from_secs(2);
 
+/// Development builds (`HORIZON_LOG_URL`): `KEY=VALUE` lines from `vr-env.txt` beside the
+/// log endpoint become environment variables, to try renderer switches on a headset
+/// without a new build. Call before any other thread starts.
+pub fn apply_remote_env() -> Vec<String> {
+    let Some(url) = URL else {
+        return Vec::new();
+    };
+    let base = url.trim_end_matches("/log");
+    let Ok(text) = ureq::AgentBuilder::new()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .get(&format!("{base}/vr-env.txt"))
+        .call()
+        .and_then(|r| r.into_string().map_err(Into::into))
+    else {
+        return Vec::new();
+    };
+    let mut applied = Vec::new();
+    for line in text.lines().map(str::trim) {
+        if line.starts_with('#') {
+            continue;
+        }
+        if let Some((key, value)) = line.split_once('=')
+            && key.starts_with("HORIZON_")
+            && !key.contains(char::is_whitespace)
+        {
+            // SAFETY: called before the game starts any other thread.
+            unsafe { std::env::set_var(key, value) };
+            applied.push(format!("{key}={value}"));
+        }
+    }
+    applied
+}
+
 pub fn start(home: &Path) {
     let Some(url) = URL else {
         return;

@@ -50,8 +50,13 @@ fn android_main(app: AndroidApp) {
     for dir in ["saves", "resourcepacks", "mods", "shaderpacks"] {
         let _ = std::fs::create_dir_all(home.join(dir));
     }
+    // Before logging starts its thread: these become environment variables.
+    let remote_env = android_logs::apply_remote_env();
     logging::init(&home, "Render thread");
     android_logs::start(&home);
+    if !remote_env.is_empty() {
+        log::info!("Horizon: settings from the development server: {remote_env:?}");
+    }
     log::info!("Horizon {} (Android) home {}", crash::version(), home.display());
     crash::install(home.clone(), "client");
     if let Some(internal) = app.internal_data_path() {
