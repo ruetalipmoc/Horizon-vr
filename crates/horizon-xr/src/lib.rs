@@ -167,6 +167,8 @@ struct Stats {
     draws: std::collections::BTreeMap<&'static str, u32>,
     /// The renderer's own counters at the last frame, for the report.
     renderer: Option<String>,
+    /// The controllers at the last read, and whether reading them failed.
+    pad: Option<Result<Pad, String>>,
 }
 
 impl Stats {
@@ -188,6 +190,15 @@ impl Stats {
         );
         if let Some(renderer) = &self.renderer {
             log::info!("Horizon VR: renderer: {renderer}");
+        }
+        match &self.pad {
+            Some(Ok(p)) => log::info!(
+                "Horizon VR: controllers: sticks {:?} {:?}, triggers {:?}, A {} B {} X {} Y {} \
+                 menu {} grips {} {}",
+                p.left, p.right, p.triggers, p.a, p.b, p.x, p.y, p.menu, p.left_grip, p.right_grip
+            ),
+            Some(Err(e)) => log::warn!("Horizon VR: controllers not read: {e}"),
+            None => log::info!("Horizon VR: controllers not read (no input focus)"),
         }
         *self = Self {
             since: Some(now),
@@ -605,7 +616,9 @@ pub fn begin_frame() -> Option<FrameViews> {
     }
     s.stats.waited += 1;
     if s.focused {
-        s.pad = s.actions.read(&s.session).unwrap_or_default();
+        let read = s.actions.read(&s.session);
+        s.pad = read.clone().unwrap_or_default();
+        s.stats.pad = Some(read.map_err(|e| e.to_string()));
     }
     let located = state
         .should_render

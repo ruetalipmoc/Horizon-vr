@@ -183,14 +183,15 @@ fn projection(width: u32, height: u32, yaw: f32, pitch: f32) -> Mat4 {
 
 /// VR: `projection`'s cube as an eye sees it, the eye given by its camera-relative
 /// `view` (only its rotation counts) and its lens' tangents (left, right, up, down).
-/// The same chain as `projection`, the eye's rotation for the camera's; under its
-/// `rotationX(PI)` up is down, so the lens is flipped vertically.
-pub(super) fn eye_matrix(view: Mat4, [left, right, up, down]: [f32; 4]) -> Mat4 {
+/// The cube is placed in the world once (`Ry(PI) * Rx(PI)`: at yaw and pitch 0 this is
+/// `projection`'s chain) and the eye looks at it as at the world, so it turns with the
+/// head; `projection`'s own yaw turns the cube the other way.
+pub(super) fn eye_matrix(view: Mat4, fov: [f32; 4]) -> Mat4 {
     let rotation = Mat4::from_mat3(glam::Mat3::from_mat4(view));
-    super::off_centre_projection([left, right, -down, -up], 10.0)
-        * Mat4::from_rotation_x(std::f32::consts::PI)
+    super::off_centre_projection(fov, 10.0)
         * rotation
         * Mat4::from_rotation_y(std::f32::consts::PI)
+        * Mat4::from_rotation_x(std::f32::consts::PI)
 }
 
 pub(super) struct Panorama {
