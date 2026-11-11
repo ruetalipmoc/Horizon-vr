@@ -4615,8 +4615,15 @@ impl Renderer {
                 );
                 visbuffer::Visbuffer::new(&device, &bindings, f, frame_format, &sprite_constants)
             });
-        // `HORIZON_MULTI_DRAW=0` (A/B checks): one draw per section and run.
+        // `HORIZON_MULTI_DRAW=0` (A/B checks): one draw per section and run. VR on Quest
+        // too: Adreno drew no terrain from multi-draws on the headset's device (entities,
+        // drawn one by one, showed), while one draw per section draws it.
+        #[cfg(target_os = "android")]
+        let xr_device = horizon_xr::active();
+        #[cfg(not(target_os = "android"))]
+        let xr_device = false;
         let multi_draw = std::env::var("HORIZON_MULTI_DRAW").as_deref() != Ok("0")
+            && !xr_device
             && device
                 .features()
                 .contains(wgpu::Features::INDIRECT_FIRST_INSTANCE)
