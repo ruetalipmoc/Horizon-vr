@@ -118,6 +118,14 @@ pub enum InputKind {
     PadHeld = 2,
 }
 
+/// The game's Controller setting, for the frame report.
+static CONTROLLER_SETTING: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(2);
+
+/// Notes the game's Controller setting (on or off) for the frame report.
+pub fn note_controller_setting(on: bool) {
+    CONTROLLER_SETTING.store(u8::from(on), std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Counts input for the frame report (development diagnostics).
 pub fn note_input(kind: InputKind) {
     INPUT[kind as usize].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -227,9 +235,14 @@ impl Stats {
             .each_ref()
             .map(|c| c.swap(0, std::sync::atomic::Ordering::Relaxed));
         log::info!(
-            "Horizon VR: input: profile {}, Android controller keys {} and motions {}, frames \
-             with a gamepad input held {}",
+            "Horizon VR: input: profile {}, controller setting {}, Android controller keys {} \
+             and motions {}, frames with a gamepad input held {}",
             self.profile.as_deref().unwrap_or("?"),
+            match CONTROLLER_SETTING.load(std::sync::atomic::Ordering::Relaxed) {
+                0 => "off",
+                1 => "on",
+                _ => "?",
+            },
             counts[0],
             counts[1],
             counts[2]

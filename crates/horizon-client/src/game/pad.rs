@@ -270,7 +270,12 @@ impl Game<'_> {
         self.pad.context = Some(context);
         // Controllers off: the touch controls still drive the virtual pad, and
         // its buttons go through the same edge handling as a real pad's.
-        let touch_only = !self.settings.controller.enabled;
+        // VR has no touch controls: the Touch controllers are the pad, whatever the setting.
+        #[cfg(target_os = "android")]
+        let vr = horizon_xr::active();
+        #[cfg(not(target_os = "android"))]
+        let vr = false;
+        let touch_only = !self.settings.controller.enabled && !vr;
         if touch_only {
             self.pad_output_off();
             if self.pad.injected == PadState::default() && self.pad.taps.is_empty() {
