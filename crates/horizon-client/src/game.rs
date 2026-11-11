@@ -19963,6 +19963,9 @@ impl Game<'_> {
                     self.extras_retry()?;
                     self.apply_mouse_look();
                     self.pad_look(elapsed.as_secs_f32());
+                    // VR: the head looks around, after the sticks turned the body.
+                    #[cfg(target_os = "android")]
+                    self.xr_look();
                     self.advance_flight();
                     self.tick_world_icon();
                     let ticked = Instant::now();

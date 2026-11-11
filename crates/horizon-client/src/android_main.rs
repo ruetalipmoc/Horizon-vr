@@ -3,6 +3,7 @@
 //! same game; this file only replaces `main` with `android_main`.
 #![cfg(target_os = "android")]
 #![allow(dead_code)]
+mod android_logs;
 mod android_msa;
 mod android_setup;
 use horizon_client::game;
@@ -50,12 +51,20 @@ fn android_main(app: AndroidApp) {
         let _ = std::fs::create_dir_all(home.join(dir));
     }
     logging::init(&home, "Render thread");
+    android_logs::start(&home);
     log::info!("Horizon {} (Android) home {}", crash::version(), home.display());
     crash::install(home.clone(), "client");
     if let Some(internal) = app.internal_data_path() {
         apply_vulkan_driver(&internal);
         apply_safe_mode(&internal);
         android_msa::prepare(&internal, &home);
+    }
+    // VR: OpenXR attaches to this activity; the renderer opens its device through it.
+    if let Some(internal) = app.internal_data_path() {
+        // SAFETY: android-activity's JavaVM and activity, valid for the whole process.
+        unsafe {
+            horizon_xr::set_android_context(app.vm_as_ptr(), app.activity_as_ptr(), internal);
+        }
     }
     let _ = game::ANDROID_APP.set(app.clone());
     // A panic here is already in the crash report (crash::install). Catch it so the activity is

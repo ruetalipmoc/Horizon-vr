@@ -101,7 +101,38 @@ pub(super) fn pad_state() -> PadState {
             triggers[i] = 1.0;
         }
     }
-    PadState { buttons: s.keys | s.hat, left: s.left, right: [right[0], -right[1]], triggers }
+    let pad = PadState { buttons: s.keys | s.hat, left: s.left, right: [right[0], -right[1]], triggers };
+    drop(s);
+    match horizon_xr::pad() {
+        Some(touch) => with_touch_controllers(pad, touch),
+        None => pad,
+    }
+}
+
+/// VR: the Touch controllers on top of any other controller. Right stick turns (the head
+/// looks up and down), left stick walks, A jumps, B sneaks, triggers use and attack,
+/// grips change the hotbar slot, the menu button pauses.
+fn with_touch_controllers(mut pad: PadState, touch: horizon_xr::Pad) -> PadState {
+    for (held, button) in [
+        (touch.a, Button::South),
+        (touch.b, Button::East),
+        (touch.x, Button::West),
+        (touch.y, Button::North),
+        (touch.menu, Button::Start),
+        (touch.left_click, Button::LeftStick),
+        (touch.right_click, Button::RightStick),
+        (touch.left_grip, Button::LeftBumper),
+        (touch.right_grip, Button::RightBumper),
+    ] {
+        if held {
+            pad.set(button, true);
+        }
+    }
+    let stronger = |a: [f32; 2], b: [f32; 2]| if b[0].hypot(b[1]) > a[0].hypot(a[1]) { b } else { a };
+    pad.left = stronger(pad.left, touch.left);
+    pad.right = stronger(pad.right, touch.right);
+    pad.triggers = [pad.triggers[0].max(touch.triggers[0]), pad.triggers[1].max(touch.triggers[1])];
+    pad
 }
 
 /// Everything let go (the app went to the background, a controller went away).
@@ -351,6 +382,17 @@ impl super::Game<'_> {
     /// game as the window's own would, the pointer is captured while playing with
     /// a mouse, and the touch controls hide while a controller, keyboard or mouse
     /// plays (a touch brings them back, `touch_event`).
+    /// VR: the player looks where the head does (`horizon_xr::look`), through
+    /// `Entity.turn` like the mouse, so everything that follows a turn still does.
+    pub(super) fn xr_look(&mut self) {
+        let Some((yaw, pitch)) = horizon_xr::look(self.yaw) else {
+            return;
+        };
+        let turn = [f64::from(yaw - self.yaw), f64::from(pitch - self.pitch)].map(|d| d / 0.15);
+        if turn != [0.0; 2] {
+            self.turn_player(turn[0], turn[1]);
+        }
+    }
     pub(super) fn android_input_frame(&mut self, event_loop: &dyn super::event_loop::EventLoopCtl) {
         use winit::{
             application::ApplicationHandler,

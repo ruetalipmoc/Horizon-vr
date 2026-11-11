@@ -13,6 +13,11 @@ rm -rf "$OUT/stage" && mkdir -p "$OUT/stage/lib"
 cargo ndk -t arm64-v8a -P 26 -o "$OUT/jni" build -p horizon-android --profile "$PROFILE" ${CARGO_FLAGS:-}
 mkdir -p "$OUT/stage/lib/arm64-v8a"
 "$NDK"/toolchains/llvm/prebuilt/*/bin/llvm-strip -o "$OUT/stage/lib/arm64-v8a/libhorizon.so" "$OUT/jni/arm64-v8a/libhorizon.so"
+# VR: the Khronos OpenXR loader (org.khronos.openxr:openxr_loader_for_android), when
+# OPENXR_LOADER names its arm64 libopenxr_loader.so. Without it the game starts flat.
+if [ -n "${OPENXR_LOADER:-}" ]; then
+  cp "$OPENXR_LOADER" "$OUT/stage/lib/arm64-v8a/libopenxr_loader.so"
+fi
 # HorizonActivity (the soft keyboard bridge) -> classes.dex.
 rm -rf "$OUT/java" && mkdir -p "$OUT/java/classes"
 "${JAVAC:-javac}" --release 8 -nowarn -classpath "$PLATFORM" -d "$OUT/java/classes" \
@@ -28,6 +33,10 @@ out = sys.argv[1]
 with zipfile.ZipFile(f"{out}/unaligned.apk", "a", zipfile.ZIP_DEFLATED) as z:
     z.write(f"{out}/java/classes.dex", "classes.dex")
     z.write(f"{out}/stage/lib/arm64-v8a/libhorizon.so", "lib/arm64-v8a/libhorizon.so")
+    loader = f"{out}/stage/lib/arm64-v8a/libopenxr_loader.so"
+    import os
+    if os.path.exists(loader):
+        z.write(loader, "lib/arm64-v8a/libopenxr_loader.so")
 PY
 "$BT/zipalign" -f -p 4 "$OUT/unaligned.apk" "$OUT/aligned.apk"
 if [ -n "${HORIZON_KEYSTORE:-}" ] && [ -f "$HORIZON_KEYSTORE" ]; then

@@ -1067,6 +1067,9 @@ pub struct Renderer {
     spare_surface: std::sync::Mutex<Option<wgpu::Surface<'static>>>,
     /// The offscreen colour target, sized like `config`.
     offscreen: Option<wgpu::Texture>,
+    /// VR: the eye being drawn (and the view culling covers both eyes with), set by
+    /// `render_xr` around each eye's frame.
+    xr_view: Option<ViewSet>,
     /// Offscreen submissions still on the GPU: at most two frames run ahead.
     in_flight: std::collections::VecDeque<wgpu::SubmissionIndex>,
     /// Splitscreen: the caller waits for the GPU once every player has submitted
@@ -2233,30 +2236,46 @@ async fn open_backend(
     allow_cpu: bool,
 ) -> std::result::Result<Opened, NoDevice> {
     let name = backends_name(backends);
-    let instance = wgpu::Instance::new(instance_descriptor(
-        backends,
-        Some(window),
-        allow_nonconformant,
-    ));
-    let surface = if offscreen {
-        None
+    // A headset: OpenXR makes the Vulkan instance and picks the GPU, and the frames go to
+    // its eyes instead of a window surface (crates/horizon-xr).
+    #[cfg(target_os = "android")]
+    let xr_opened = if backends.contains(wgpu::Backends::VULKAN) {
+        horizon_xr::instance_and_adapter()
     } else {
-        match instance.create_surface(window.clone()) {
-            Ok(surface) => Some(surface),
-            Err(e) => return Err(NoDevice::Failed(format!("{name} surface: {e}"))),
-        }
+        None
     };
-    let adapter = match instance
-        .request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            compatible_surface: surface.as_ref(),
-            force_fallback_adapter: false,
-            ..Default::default()
-        })
-        .await
-    {
-        Ok(adapter) => adapter,
-        Err(e) => return Err(NoDevice::NoAdapter(format!("{name}: {e}"))),
+    #[cfg(not(target_os = "android"))]
+    let xr_opened: Option<(wgpu::Instance, wgpu::Adapter)> = None;
+    let xr = xr_opened.is_some();
+    let (instance, surface, adapter) = if let Some((instance, adapter)) = xr_opened {
+        (instance, None, adapter)
+    } else {
+        let instance = wgpu::Instance::new(instance_descriptor(
+            backends,
+            Some(window),
+            allow_nonconformant,
+        ));
+        let surface = if offscreen {
+            None
+        } else {
+            match instance.create_surface(window.clone()) {
+                Ok(surface) => Some(surface),
+                Err(e) => return Err(NoDevice::Failed(format!("{name} surface: {e}"))),
+            }
+        };
+        let adapter = match instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                compatible_surface: surface.as_ref(),
+                force_fallback_adapter: false,
+                ..Default::default()
+            })
+            .await
+        {
+            Ok(adapter) => adapter,
+            Err(e) => return Err(NoDevice::NoAdapter(format!("{name}: {e}"))),
+        };
+        (instance, surface, adapter)
     };
     // NoAdapter, so `open_with_retry` asks again: with the non-conformant
     // adapters shown, wgpu ranks a real GPU (hasvk on Ivy Bridge or Haswell)
@@ -2317,13 +2336,24 @@ async fn open_backend(
         memory_hints: wgpu::MemoryHints::MemoryUsage,
         ..Default::default()
     };
+    #[cfg(target_os = "android")]
+    let xr_device = if xr {
+        horizon_xr::open_device(&adapter, &desc)
+    } else {
+        None
+    };
+    #[cfg(not(target_os = "android"))]
+    let xr_device = {
+        let _ = xr;
+        None
+    };
     #[cfg(not(target_os = "macos"))]
-    let opened = match info.backend {
+    let opened = xr_device.or_else(|| match info.backend {
         wgpu::Backend::Vulkan => horizon_hdr::open_vulkan_device(&adapter, &desc),
         _ => None,
-    };
+    });
     #[cfg(target_os = "macos")]
-    let opened = None;
+    let opened = xr_device;
     let opened = match opened {
         Some(opened) => opened,
         None => adapter.request_device(&desc).await,
@@ -2634,13 +2664,24 @@ impl Renderer {
             (config, caps.present_modes.clone(), hdr_output)
         } else {
             let format = wgpu::TextureFormat::Bgra8Unorm;
+            // VR: the frame is an eye's image, which the eyes' copy pass samples.
+            #[cfg(target_os = "android")]
+            let xr_eyes = horizon_xr::eye_size();
+            #[cfg(not(target_os = "android"))]
+            let xr_eyes: Option<[u32; 2]> = None;
+            let [width, height] = xr_eyes.unwrap_or([size.width, size.height]);
             let config = wgpu::SurfaceConfiguration {
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT
                     | wgpu::TextureUsages::COPY_SRC
-                    | wgpu::TextureUsages::COPY_DST,
+                    | wgpu::TextureUsages::COPY_DST
+                    | if xr_eyes.is_some() {
+                        wgpu::TextureUsages::TEXTURE_BINDING
+                    } else {
+                        wgpu::TextureUsages::empty()
+                    },
                 format,
-                width: size.width.clamp(1, max_side),
-                height: size.height.clamp(1, max_side),
+                width: width.clamp(1, max_side),
+                height: height.clamp(1, max_side),
                 present_mode: wgpu::PresentMode::Immediate,
                 desired_maximum_frame_latency: 2,
                 alpha_mode: wgpu::CompositeAlphaMode::Opaque,
@@ -4676,6 +4717,7 @@ impl Renderer {
             surface: surface.map(Arc::new),
             spare_surface: std::sync::Mutex::new(None),
             offscreen,
+            xr_view: None,
             in_flight: std::collections::VecDeque::new(),
             paced_elsewhere: false,
             first_frame: if previous.is_none() {
@@ -5178,6 +5220,9 @@ impl Renderer {
     /// Follows the window to `width` x `height`. A size the swapchain can't take
     /// ([`drawable_size`]) keeps the last one and draws nothing until the next.
     pub fn resize(&mut self, width: u32, height: u32) {
+        // VR: frames are the eyes' size whatever the window does.
+        #[cfg(target_os = "android")]
+        let [width, height] = horizon_xr::eye_size().unwrap_or([width, height]);
         let max = self.device.limits().max_texture_dimension_2d;
         self.suspended = !drawable_size(width, height, max);
         if self.suspended {
@@ -7177,6 +7222,9 @@ impl Renderer {
     }
     /// The views `render` draws `frame` from.
     pub fn views(&self, frame: &Frame) -> ViewSet {
+        if let Some(views) = self.xr_view {
+            return views;
+        }
         ViewSet::single(self.screen_view(
             frame.fov_degrees,
             frame.yaw,
@@ -7194,6 +7242,14 @@ impl Renderer {
         bob: Mat4,
         depth_far: f32,
     ) -> Frustum {
+        // VR: the eyes see more than the game's field of view, and the head turns
+        // between this and the frame.
+        #[cfg(target_os = "android")]
+        let fov_degrees = if horizon_xr::active() {
+            fov_degrees.max(125.0)
+        } else {
+            fov_degrees
+        };
         let views = ViewSet::single(self.screen_view(fov_degrees, yaw, pitch, depth_far));
         Frustum {
             planes: frustum(views.cull().view_proj(bob)),
@@ -7335,6 +7391,44 @@ impl Renderer {
         }
     }
     pub fn render(&mut self, frame: &Frame) -> Result<bool> {
+        #[cfg(target_os = "android")]
+        if horizon_xr::active() {
+            return self.render_xr(frame);
+        }
+        self.render_screen(frame)
+    }
+    /// VR: waits for the headset's frame, draws `frame` once per eye and hands each
+    /// eye's image to the headset. A frame the headset skips still takes in its uploads.
+    #[cfg(target_os = "android")]
+    fn render_xr(&mut self, frame: &Frame) -> Result<bool> {
+        let Some(xr) = horizon_xr::begin_frame() else {
+            let suspended = std::mem::replace(&mut self.suspended, true);
+            let result = self.render_screen(frame);
+            self.suspended = suspended;
+            return result.map(|_| false);
+        };
+        let [width, height] = xr.size;
+        if [self.config.width, self.config.height] != [width, height] {
+            self.resize(width, height);
+        }
+        let far = frame.depth_far;
+        let cull = xr_cull_view(&xr.eyes, far);
+        let mut drawn = Ok(false);
+        for (i, eye) in xr.eyes.iter().enumerate() {
+            self.xr_view = Some(ViewSet::with_cull(xr_eye_view(eye, far), cull));
+            drawn = self.render_screen(frame);
+            if !matches!(drawn, Ok(true)) {
+                break;
+            }
+            if let Some(target) = &self.offscreen {
+                horizon_xr::submit_eye(i, &self.queue, target);
+            }
+        }
+        self.xr_view = None;
+        horizon_xr::end_frame();
+        drawn
+    }
+    fn render_screen(&mut self, frame: &Frame) -> Result<bool> {
         crate::sdk_post::capture(frame);
         // A lost device cannot accept uploads either. Leave recovery to the
         // owner instead of submitting atlas patches to the invalid device.
@@ -7521,6 +7615,7 @@ impl Renderer {
         // into frames of its own. Not over menus that blur the frame, a shader pack's
         // own post passes, HDR (or the 16-bit frame it was started with) or the title screen.
         let fg = self.frame_gen.on
+            && self.xr_view.is_none()
             && !self.frame_gen.paused
             && self.hdr.is_none()
             && self.frame_format == self.config.format.remove_srgb_suffix()
@@ -7653,11 +7748,18 @@ impl Renderer {
             frame.boss_darken,
         );
         let views = self.views(frame);
-        let pose = frame.bob * frame.spin;
+        // VR: the head moves the view; a bob or spin on top of it makes people sick.
+        let pose = if self.xr_view.is_some() {
+            Mat4::IDENTITY
+        } else {
+            frame.bob * frame.spin
+        };
         let view_proj = views.primary().view_proj(pose);
         laps.lap("r_acquire");
         // TAA runs where the world post pass does, not under a shader pack's own.
+        // Not in VR: the eyes take turns, and each would blend in the other's history.
         let taa = !frame.title
+            && self.xr_view.is_none()
             && self.pack_post.as_ref().is_none_or(|p| p.1.is_none())
             && self.native.as_ref().is_none_or(|n| n.post.is_none());
         let jitter = self.world_post.jitter(
@@ -12042,6 +12144,56 @@ struct Overlay {
 
 fn world_projection(fov_degrees: f32, aspect: f32, far: f32) -> Mat4 {
     Mat4::perspective_rh(fov_degrees.to_radians(), aspect, far, NEAR_PLANE)
+}
+
+/// `world_projection` for an off-centre lens given by the tangents of its edges (left
+/// and down negative): reversed Z, the near plane at depth 1 and `far` at 0.
+fn off_centre_projection([left, right, up, down]: [f32; 4], far: f32) -> Mat4 {
+    let depth = NEAR_PLANE / (far - NEAR_PLANE);
+    Mat4::from_cols(
+        Vec4::new(2.0 / (right - left), 0.0, 0.0, 0.0),
+        Vec4::new(0.0, 2.0 / (up - down), 0.0, 0.0),
+        Vec4::new(
+            (right + left) / (right - left),
+            (up + down) / (up - down),
+            depth,
+            -1.0,
+        ),
+        Vec4::new(0.0, 0.0, depth * far, 0.0),
+    )
+}
+
+/// One eye of a headset: its rotation and offset from the camera, and its lens.
+#[cfg(target_os = "android")]
+fn xr_eye_view(eye: &horizon_xr::Eye, far: f32) -> View {
+    let [left, right, up, down] = eye.fov;
+    View {
+        view: Mat4::from_quat(eye.rotation.conjugate()) * Mat4::from_translation(-eye.offset),
+        projection: off_centre_projection(eye.fov, far),
+        aspect: (right - left) / (up - down),
+        tan_half_fov: (up - down) / 2.0,
+    }
+}
+
+/// A view from the camera that sees everything either eye does, to cull with.
+#[cfg(target_os = "android")]
+fn xr_cull_view(eyes: &[horizon_xr::Eye; 2], far: f32) -> View {
+    let [a, b] = eyes.map(|e| e.fov);
+    let margin = 1.15;
+    let fov = [
+        a[0].min(b[0]) * margin,
+        a[1].max(b[1]) * margin,
+        a[2].max(b[2]) * margin,
+        a[3].min(b[3]) * margin,
+    ];
+    xr_eye_view(
+        &horizon_xr::Eye {
+            rotation: eyes[0].rotation,
+            offset: Vec3::ZERO,
+            fov,
+        },
+        far,
+    )
 }
 
 /// `view_proj` mirrored about the horizontal plane at the camera-relative height `plane`:

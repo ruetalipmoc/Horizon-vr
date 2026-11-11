@@ -85,6 +85,7 @@ winit = { version = "0.30.13", features = ["android-native-activity"] }
 # The soft keyboard bridge and the activity calls (HorizonActivity.java, game/android_ime.rs).
 jni = "0.21"
 libc = "0.2"
+horizon-xr = { path = "../horizon-xr" }
 
 [features]
 default = ["audio"]

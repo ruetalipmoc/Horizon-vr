@@ -59,6 +59,15 @@ impl ViewSet {
         }
     }
 
+    /// A frame drawn from `view` alone, culled with `cull` (which must see all `view` does).
+    pub fn with_cull(view: View, cull: View) -> Self {
+        Self {
+            views: [view; MAX_VIEWS],
+            len: 1,
+            cull,
+        }
+    }
+
     /// The view the HUD, hand and screen-space effects follow.
     pub fn primary(&self) -> &View {
         &self.views[0]
