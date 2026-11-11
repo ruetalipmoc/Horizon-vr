@@ -216,6 +216,8 @@ struct Session {
     /// The controllers' spaces and their poses in LOCAL space at the last frame, by `Hand`.
     hand_spaces: Vec<xr::Space>,
     hands: [Option<(Quat, Vec3)>; 4],
+    /// The controllers in the world at the last frame (`last_hands`).
+    world_hands: [Option<HandPose>; 4],
     /// Where the right controller points on the open menu's panel (0..1, from the top
     /// left), the trigger held, and the point in LOCAL space.
     pointer: Option<([f32; 2], bool, Vec3)>,
@@ -685,6 +687,7 @@ fn start_session(xr: &Xr, device: &wgpu::Device, raw_device: vk::Device) -> Resu
         head: None,
         hand_spaces,
         hands: [None; 4],
+        world_hands: [None; 4],
         pointer: None,
         dot,
         hotbar: None,
@@ -799,6 +802,7 @@ pub fn begin_frame() -> Option<FrameViews> {
             offset: body * (position - head_position + lean),
         })
     });
+    s.world_hands = hands;
     if s.menu_open && s.menu_pose.is_none() {
         s.menu_pose = Some(menu_pose(head_rotation, head_position));
     }
@@ -865,6 +869,12 @@ fn wrist_quad((rotation, position): (Quat, Vec3), hotbar: Hotbar) -> (xr::Posef,
     let turn = rotation * Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
     let size = [WRIST_WIDTH, WRIST_WIDTH * hotbar.crop[3] / hotbar.crop[2].max(1.0)];
     (pose(turn, position + rotation * WRIST_AT), size)
+}
+
+/// The controllers in the world at the last frame, by `Hand`, for the game to put the
+/// player's arms and held items on.
+pub fn last_hands() -> Option<[Option<HandPose>; 4]> {
+    Some(xr_state().as_ref()?.session.as_ref()?.world_hands)
 }
 
 /// Where the hotbar is in the HUD's image this frame (the game knows its GUI scale).

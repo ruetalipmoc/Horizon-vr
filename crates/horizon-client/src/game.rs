@@ -15112,7 +15112,10 @@ impl Game<'_> {
                 Some(Hand::Main) => false,
             };
         for (i, (hand, item)) in Hand::BOTH.into_iter().zip(items).enumerate() {
-            if !shown[i] {
+            // VR: both arms show, each on its controller, whatever they hold.
+            let vr_left = self.settings.main_hand_left != (hand == Hand::Off);
+            let vr_frame = vr_hand_frame(vr_left);
+            if !shown[i] && vr_frame.is_none() {
                 continue;
             }
             let scale = item.as_ref().map_or(1.0, |stack| {
@@ -15121,9 +15124,13 @@ impl Game<'_> {
                     .models
                     .swap_animation_scale(&horizon_client::item_render::stack_view(stack))
             });
-            let attack = attacks[i];
-            let inverse_height =
-                horizon_client::first_person::equip_displacement(heights[i], scale);
+            // VR: the player's own hand swings; no pretend swing or equip dip.
+            let attack = if vr_frame.is_some() { 0.0 } else { attacks[i] };
+            let inverse_height = if vr_frame.is_some() {
+                0.0
+            } else {
+                horizon_client::first_person::equip_displacement(heights[i], scale)
+            };
             let mut canceled = false;
             self.native_render_hand(
                 hand,
@@ -15165,6 +15172,15 @@ impl Game<'_> {
             if hand == Hand::Off && legacy_block {
                 continue;
             }
+            if let Some(frame) = vr_frame {
+                if !self.own_invisible() {
+                    runs.push((out.len() as u32, 0));
+                    self.first_person_arm(left, frame * vr_arm_local(left), packed, &mut out);
+                }
+                if item.is_none() {
+                    continue;
+                }
+            }
             let Some(stack) = item else {
                 // renderArmWithItem: only the main hand's empty arm shows,
                 // on the main arm (the left one with the main hand set to
@@ -15180,7 +15196,9 @@ impl Game<'_> {
                 continue;
             };
             let item_id = self.rendered_item_id(&stack.item);
-            if let Some(id) = maps::map_id(&stack) {
+            if vr_frame.is_none()
+                && let Some(id) = maps::map_id(&stack)
+            {
                 use horizon_client::first_person::{MapHold, map_arm_poses, one_handed_map_pose};
                 let hold = MapHold::of(hand, off_hand_empty);
                 // renderOneHandedMap and renderTwoHandedMap: the arms under
@@ -15283,8 +15301,11 @@ impl Game<'_> {
                 }
                 _ => ItemPose::Swing,
             };
-            let mut m = to_world
-                * horizon_client::first_person::item_pose(left, inverse_height, attack, pose);
+            let base = horizon_client::first_person::item_pose(left, inverse_height, attack, pose);
+            let mut m = match vr_frame {
+                Some(frame) => frame * vr_item_local(base),
+                None => to_world * base,
+            };
             // PvP & HUD's shield size (100% is vanilla's), toward the hand holding it.
             let shield_size = self.settings.extras.pvp.tweaks.shield_size;
             if shield_size != 100 && &*stack.item == "minecraft:shield" {
@@ -15323,7 +15344,9 @@ impl Game<'_> {
                     hand == Hand::Main && legacy_block,
                 )
             {
-                m = to_world * legacy;
+                if vr_frame.is_none() {
+                    m = to_world * legacy;
+                }
             }
             runs.push((out.len() as u32, item_id));
             let light = self.world.light(
@@ -20288,6 +20311,48 @@ impl Game<'_> {
             Instant::now(),
         ));
     }
+}
+/// VR: the controller holding the `left` or right arm, camera-relative world from its
+/// own axes (-Z ahead, toward the elbow is +Z); `None` off VR or while it isn't tracked.
+fn vr_hand_frame(left: bool) -> Option<glam::Mat4> {
+    #[cfg(target_os = "android")]
+    {
+        let hands = horizon_xr::active().then(horizon_xr::last_hands).flatten()?;
+        let grip = if left { horizon_xr::Hand::LeftGrip } else { horizon_xr::Hand::RightGrip };
+        let hand = hands[grip as usize]?;
+        return Some(glam::Mat4::from_translation(hand.offset) * glam::Mat4::from_quat(hand.rotation));
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = left;
+        None
+    }
+}
+
+/// How long the player's arm is in VR, as a share of the model's (12 pixels).
+const VR_ARM_SCALE: f32 = 0.6;
+/// The held item's size in VR, as a share of the first-person view's.
+const VR_ITEM_SCALE: f32 = 0.6;
+
+/// VR: the arm model (`first_person_arm`'s space: Minecraft's Y-down model, in
+/// blocks) straight back from the controller, its hand at the grip.
+fn vr_arm_local(left: bool) -> glam::Mat4 {
+    use glam::{Mat4, Vec3};
+    // The model upright (vanilla's `scale(-1, -1, 1)`): the arm hangs from the shoulder
+    // at y 0 to its hand at -0.75, its middle 6 pixels out from the body.
+    let side = if left { -0.375 } else { 0.375 };
+    Mat4::from_scale(Vec3::splat(VR_ARM_SCALE))
+        // Down the arm (to the hand) becomes ahead (-Z).
+        * Mat4::from_rotation_x(std::f32::consts::FRAC_PI_2)
+        * Mat4::from_translation(-Vec3::new(side, -0.7, 0.0))
+        * Mat4::from_scale(Vec3::new(-1.0, -1.0, 1.0))
+}
+
+/// VR: the first-person item pose `base` (before the camera) moved onto the controller:
+/// where it sits before the camera becomes the grip, its tilt kept.
+fn vr_item_local(base: glam::Mat4) -> glam::Mat4 {
+    use glam::{Mat4, Vec3};
+    Mat4::from_scale(Vec3::splat(VR_ITEM_SCALE)) * Mat4::from_translation(-base.w_axis.truncate()) * base
 }
 /// VR aims with the right controller: a crosshair in the middle of the view would lie.
 fn vr_hides_crosshair() -> bool {
