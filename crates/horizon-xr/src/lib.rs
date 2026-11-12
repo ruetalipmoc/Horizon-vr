@@ -1071,6 +1071,16 @@ pub fn set_look_hand(left: bool) {
     }
 }
 
+/// Where the head looks: its yaw and pitch in the world (Minecraft degrees) and its
+/// forward in LOCAL (room) space.
+pub fn head_look() -> Option<(f32, f32, Vec3)> {
+    let guard = xr_state();
+    let s = guard.as_ref()?.session.as_ref()?;
+    let (rotation, _) = s.head?;
+    let (yaw, pitch) = yaw_pitch(body_rotation(s.body_yaw) * rotation);
+    Some((yaw, pitch, rotation * Vec3::NEG_Z))
+}
+
 /// The yaw and pitch a controller points along in the world (Minecraft degrees), for
 /// picking along the hand the player does not look with.
 pub fn hand_angles(left: bool) -> Option<(f32, f32)> {

@@ -537,8 +537,61 @@ impl super::Game<'_> {
             None => None,
         }
     }
+    /// VR: swimming by arm strokes. In water, hands pulled back (against where the head
+    /// looks) at more than half a metre a second push the player where the head looks, as
+    /// hard as they pull; water's drag slows them again as usual.
+    fn xr_swim(&mut self) {
+        use std::time::Instant;
+        static LAST: Mutex<Option<(Instant, [Option<glam::Vec3>; 2])>> = Mutex::new(None);
+        let now = Instant::now();
+        let hands = horizon_xr::room_hands().map(|h| {
+            [h[horizon_xr::Hand::LeftGrip as usize], h[horizon_xr::Hand::RightGrip as usize]]
+        });
+        let mut last = LAST.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let previous = std::mem::replace(&mut *last, hands.map(|h| (now, h)));
+        let playing = self.screen == super::Screen::Playing && self.title.is_none();
+        let in_water = self.player.as_ref().is_some_and(|p| p.fluids.was_touching_water);
+        let (Some(hands), Some((then, before)), Some((yaw, pitch, forward))) =
+            (hands, previous, horizon_xr::head_look())
+        else {
+            return;
+        };
+        if !playing || !in_water || self.riding.is_some() {
+            return;
+        }
+        let dt = now.duration_since(then).as_secs_f32();
+        if !(0.001..0.1).contains(&dt) {
+            return;
+        }
+        // Metres a second the hands pull back, the stronger one.
+        let pull = (0..2)
+            .filter_map(|i| Some((hands[i]? - before[i]?) / dt))
+            .map(|v| (-v.dot(forward)).max(0.0))
+            .fold(0.0f32, f32::max);
+        if pull < 0.5 {
+            return;
+        }
+        let dir = super::pick_view_vector(yaw, pitch);
+        // Per tick, 0.02 blocks a tick for each metre a second: with water's drag a steady
+        // 2 m/s stroke swims about 4 blocks a second.
+        let push = 0.02 * f64::from(pull.min(4.0)) * f64::from(dt) * 20.0;
+        if let Some(p) = self.player.as_mut() {
+            let v = &mut p.velocity;
+            v.x += dir[0] * push;
+            v.y += dir[1] * push;
+            v.z += dir[2] * push;
+            let speed = (v.x * v.x + v.y * v.y + v.z * v.z).sqrt();
+            if speed > 0.35 {
+                let k = 0.35 / speed;
+                v.x *= k;
+                v.y *= k;
+                v.z *= k;
+            }
+        }
+    }
     pub(super) fn xr_look(&mut self) {
         horizon_xr::set_menu(self.title.is_some() || self.screen != super::Screen::Playing);
+        self.xr_swim();
         // A swing at a mob first, else the hand's own actions (they track every frame).
         let tip = self.xr_right_tip();
         let swing = self.xr_swing(tip);
