@@ -65,9 +65,18 @@ fn android_main(app: AndroidApp) {
         android_msa::prepare(&internal, &home);
     }
     // VR: OpenXR attaches to this activity; the renderer opens its device through it.
-    // "PLAY 2D" (the profile screen) leaves `launch-2d`: the flat game, no VR.
+    // "PLAY 2D" (the profile screen) leaves `launch-2d`: the flat game, no VR. The
+    // headset's panel offers HDR (scRGB), whose path drew the sun as a black square and
+    // then the world black on Quest: the panel gets the plain frame.
+    let flat = app
+        .internal_data_path()
+        .is_some_and(|internal| internal.join("launch-2d").exists());
+    if flat && std::env::var_os("HORIZON_HDR_OUTPUT").is_none() {
+        // SAFETY: still before the game starts its threads.
+        unsafe { std::env::set_var("HORIZON_HDR_OUTPUT", "none") };
+    }
     if let Some(internal) = app.internal_data_path()
-        && !internal.join("launch-2d").exists()
+        && !flat
     {
         // SAFETY: android-activity's JavaVM and activity, valid for the whole process.
         unsafe {

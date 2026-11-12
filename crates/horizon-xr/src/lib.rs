@@ -857,7 +857,7 @@ pub fn begin_frame() -> Option<FrameViews> {
     };
     s.wrist_slot = match (s.hotbar, forearm(&s.hands), s.hands[Hand::RightAim as usize]) {
         (Some(hotbar), Some(left), Some((_, tip))) if !s.menu_open => {
-            let (at, size) = wrist_quad(left, hotbar, head_position);
+            let (at, size) = wrist_quad(left, hotbar);
             let local = quat(at.orientation).inverse() * (tip - vec3(at.position));
             let inside = local.z.abs() < WRIST_TOUCH
                 && local.x.abs() <= size[0] / 2.0
@@ -914,19 +914,23 @@ fn forearm(hands: &[Option<(Quat, Vec3)>; 4]) -> Option<(Quat, Vec3)> {
 
 /// The hotbar's panel on the left forearm for `left` (the forearm's pose in LOCAL space):
 /// its pose (facing the forearm's inside, reading toward the hand) and size.
-fn wrist_quad((rotation, position): (Quat, Vec3), hotbar: Hotbar, head: Vec3) -> (xr::Posef, [f32; 2]) {
+fn wrist_quad((rotation, position): (Quat, Vec3), hotbar: Hotbar) -> (xr::Posef, [f32; 2]) {
     let size = [WRIST_WIDTH, WRIST_WIDTH * hotbar.crop[3] / hotbar.crop[2].max(1.0)];
-    // Along the forearm, a little toward the head, and turned to face it: readable
-    // without twisting the wrist like a watch.
-    let along = position + rotation * Vec3::new(0.0, 0.0, WRIST_AT.z);
-    let facing = (head - along).normalize_or(Vec3::Y);
-    let centre = along + facing * WRIST_AT.x;
-    // Reading toward the hand, upright to the eyes.
-    let toward_hand = rotation * Vec3::NEG_Z;
-    let x = (toward_hand - facing * toward_hand.dot(facing)).normalize_or(Vec3::X);
-    let y = facing.cross(x);
-    let turn = Quat::from_mat3(&glam::Mat3::from_cols(x, y, facing));
+    // Fixed to the forearm like a band: on its top (the back of the hand's side, which
+    // faces up with the arm held out), along it toward the hand, its top edge away from
+    // the body. It moves with the whole forearm, not with the wrist's twist alone.
+    let x = rotation * Vec3::NEG_Z;
+    let normal = rotation * Vec3::Y;
+    let y = normal.cross(x);
+    let turn = Quat::from_mat3(&glam::Mat3::from_cols(x, y, normal));
+    let centre = position + rotation * Vec3::new(0.0, WRIST_AT.x, WRIST_AT.z);
     (pose(turn, centre), size)
+}
+
+/// The controllers in room space at the last frame (LOCAL space, metres): where the
+/// hands really are, whatever the player's body does in the game.
+pub fn room_hands() -> Option<[Option<Vec3>; 4]> {
+    Some(xr_state().as_ref()?.session.as_ref()?.hands.map(|h| h.map(|(_, p)| p)))
 }
 
 /// The controllers in the world at the last frame, by `Hand`, for the game to put the
@@ -1162,7 +1166,7 @@ pub fn end_frame(queue: &wgpu::Queue) {
             .then_some(s.hotbar.zip(forearm(&s.hands)))
             .flatten();
         if let Some((hotbar, left)) = wrist {
-            let (at, size) = wrist_quad(left, hotbar, s.head.map_or(Vec3::ZERO, |(_, p)| p));
+            let (at, size) = wrist_quad(left, hotbar);
             let [x, y, w, h] = hotbar.crop.map(|v| v.round() as i32);
             let crop = xr::Rect2Di {
                 offset: xr::Offset2Di { x, y },

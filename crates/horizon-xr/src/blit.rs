@@ -251,7 +251,7 @@ fn fs_unorm(in: Out) -> @location(0) vec4<f32> {
 // translucent all but goes, what is (nearly) opaque stays.
 fn fade_veil(c: vec4<f32>) -> vec4<f32> {
     if c.a < 0.9 {
-        return c * 0.12;
+        return vec4<f32>(0.0);
     }
     return c;
 }

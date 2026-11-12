@@ -5308,7 +5308,7 @@ impl Renderer {
         ANDROID_SPLIT.store(on, std::sync::atomic::Ordering::Relaxed);
     }
     fn split_solid(&self) -> bool {
-        split_solid_on(self.info.backend, self.gpu_culling.is_none())
+        split_solid_on(self.info.backend, self.gpu_culling.is_none()) && !xr_whole_sections()
     }
     /// Switches leaving out solid quads facing away, for A/B checks.
     pub fn set_section_sides(&mut self, on: bool) {
@@ -7480,6 +7480,9 @@ impl Renderer {
         }
         let far = frame.depth_far;
         let cull = xr_cull_view(&xr.eyes, far);
+        // Each section in one draw (`xr_whole_sections`): the GPU drops the faces turned
+        // away itself, cheaper than thousands of draws per eye.
+        self.sides_on = !xr_whole_sections();
         // The headset shows the frames, not the window: a window Android hid (the
         // immersive activity has none on screen) does not stop them.
         let suspended = std::mem::replace(&mut self.suspended, false);
@@ -12395,6 +12398,17 @@ fn eye_view(rotation: glam::Quat, offset: Vec3, fov: [f32; 4], far: f32) -> View
         aspect: (right - left) / (up - down),
         tan_half_fov: (up - down) / 2.0,
     }
+}
+
+/// VR: sections draw whole, in one pass and without splitting them by the sides facing
+/// the eye. Per-section draws are all the headset's GPU has (no multi-draw), and with two
+/// eyes the split's thousands of draws cost the Quest more than the faces it saves.
+/// `HORIZON_XR_SPLIT=1` brings the split back, for A/B checks.
+fn xr_whole_sections() -> bool {
+    #[cfg(target_os = "android")]
+    return horizon_xr::active() && std::env::var("HORIZON_XR_SPLIT").as_deref() != Ok("1");
+    #[cfg(not(target_os = "android"))]
+    false
 }
 
 /// `HORIZON_FAKE_XR`: a Quest 3 left eye's lens (`1`), or four tangents
