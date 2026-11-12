@@ -49,6 +49,8 @@ const WRIST_AT: Vec3 = Vec3::new(0.064, 0.0, 0.13);
 /// How near (metres) the right controller's tip must come to the wrist's hotbar to pick
 /// a slot.
 const WRIST_TOUCH: f32 = 0.1;
+/// The aim's crosshair image, pixels a side.
+const CROSS_PIXELS: u32 = 32;
 
 /// Where the hotbar is in the HUD's image (pixels from the top left), set by the game
 /// each frame: the part shown on the wrist, the slots' row and each slot's width.
@@ -223,11 +225,21 @@ struct Session {
     world_hands: [Option<HandPose>; 4],
     /// Where the right controller points on the open menu's panel (0..1, from the top
     /// left), the trigger held, and the point in LOCAL space.
-    pointer: Option<([f32; 2], bool, Vec3)>,
-    /// The pointer's dot, drawn on the panel where it points.
-    dot: blit::EyeChain,
-    /// The right controller's aim, steadied for pointing (`steady`).
-    steady_aim: Option<Quat>,
+    /// Each controller's point on the open menu's panel (0..1 from the top left) and in
+    /// LOCAL space, left then right.
+    pointers: [Option<([f32; 2], Vec3)>; 2],
+    /// The hand whose trigger last went down on the menu: the mouse follows it and its
+    /// trigger alone clicks (0 left, 1 right).
+    active_hand: usize,
+    /// The triggers held at the last frame, to see one go down.
+    triggers_held: [bool; 2],
+    /// The pointers' dots, left then right.
+    dots: [blit::EyeChain; 2],
+    /// The aim's crosshair, drawn once (`cross_ready`).
+    cross: blit::EyeChain,
+    cross_ready: bool,
+    /// The controllers' aims, steadied for pointing, left then right.
+    steady_aim: [Option<Quat>; 2],
     /// The sticks' clicks: the last raw state, since when, and the state let through.
     clicks: [(bool, std::time::Instant, bool); 2],
     /// The hotbar in the HUD's image (`set_hotbar`).
@@ -236,8 +248,9 @@ struct Session {
     /// in LOCAL space (where its dot goes).
     wrist_slot: Option<usize>,
     wrist_point: Option<Vec3>,
-    /// Where the right controller aims in the world (camera-relative, `set_aim_point`).
-    aim_point: Option<Vec3>,
+    /// Where the right controller aims in the world (camera-relative) and the face's
+    /// normal there, if it is a block (`set_aim_point`).
+    aim_point: Option<(Vec3, Option<Vec3>)>,
     /// The player's yaw to add to the left stick so it walks where the head faces.
     move_turn: f32,
     /// The body's turn and the head's lean at the last frame, to put world points back
@@ -686,7 +699,11 @@ fn start_session(xr: &Xr, device: &wgpu::Device, raw_device: vk::Device) -> Resu
         blit::EyeChain::new(&session, device, format, size)?,
     ];
     let panel = blit::EyeChain::new(&session, device, format, size)?;
-    let dot = blit::EyeChain::new(&session, device, format, [16, 16])?;
+    let dots = [
+        blit::EyeChain::new(&session, device, format, [16, 16])?,
+        blit::EyeChain::new(&session, device, format, [16, 16])?,
+    ];
+    let cross = blit::EyeChain::new(&session, device, format, [CROSS_PIXELS, CROSS_PIXELS])?;
     Ok(Session {
         session,
         waiter,
@@ -713,9 +730,13 @@ fn start_session(xr: &Xr, device: &wgpu::Device, raw_device: vk::Device) -> Resu
         hand_spaces,
         hands: [None; 4],
         world_hands: [None; 4],
-        pointer: None,
-        dot,
-        steady_aim: None,
+        pointers: [None; 2],
+        active_hand: 1,
+        triggers_held: [false; 2],
+        dots,
+        cross,
+        cross_ready: false,
+        steady_aim: [None; 2],
         clicks: [(false, std::time::Instant::now(), false); 2],
         hotbar: None,
         wrist_slot: None,
@@ -853,21 +874,33 @@ pub fn begin_frame() -> Option<FrameViews> {
     let aspect = s.size[1] as f32 / s.size[0] as f32;
     // A hand never holds still: small turns are steadied so the pointer rests on a slot,
     // large ones followed at once.
-    s.steady_aim = s.hands[Hand::RightAim as usize].map(|(rotation, _)| match s.steady_aim {
-        Some(previous) => {
-            let follow = (previous.angle_between(rotation) / 0.06).clamp(0.12, 1.0);
-            previous.slerp(rotation, follow)
+    // Both controllers point at a menu, each with its own dot; the one whose trigger goes
+    // down there takes the mouse, and its trigger clicks.
+    let panel = s.menu_open.then_some(s.menu_pose).flatten();
+    for (i, aim) in [Hand::LeftAim, Hand::RightAim].into_iter().enumerate() {
+        let hand = s.hands[aim as usize];
+        s.steady_aim[i] = hand.map(|(rotation, _)| match s.steady_aim[i] {
+            Some(previous) => {
+                let follow = (previous.angle_between(rotation) / 0.06).clamp(0.12, 1.0);
+                previous.slerp(rotation, follow)
+            }
+            None => rotation,
+        });
+        s.pointers[i] = match (panel, s.steady_aim[i].zip(hand)) {
+            (Some(panel), Some((rotation, (_, origin)))) => {
+                panel_hit(panel, MENU_WIDTH, MENU_WIDTH * aspect, origin, rotation * Vec3::NEG_Z)
+            }
+            _ => None,
+        };
+        let held = s.pad.triggers[i] > 0.5;
+        if held && !s.triggers_held[i] && s.pointers[i].is_some() {
+            s.active_hand = i;
         }
-        None => rotation,
-    });
-    let steady = s.steady_aim.zip(s.hands[Hand::RightAim as usize]).map(|(r, (_, p))| (r, p));
-    s.pointer = match (s.menu_open.then_some(s.menu_pose).flatten(), steady) {
-        (Some(panel), Some((rotation, origin))) => {
-            panel_hit(panel, MENU_WIDTH, MENU_WIDTH * aspect, origin, rotation * Vec3::NEG_Z)
-                .map(|(uv, at)| (uv, s.pad.triggers[1] > 0.5, at))
-        }
-        _ => None,
-    };
+        s.triggers_held[i] = held;
+    }
+    if s.pointers[s.active_hand].is_none() && s.pointers[1 - s.active_hand].is_some() {
+        s.active_hand = 1 - s.active_hand;
+    }
     s.last_lean = lean;
     // The right controller's tip over the wrist's hotbar: the slot under it (anywhere
     // over the panel, picked by where along it the tip is) and the point it is over.
@@ -989,7 +1022,7 @@ pub fn move_turn() -> f32 {
 
 /// Where the right controller aims in the world, camera-relative (the block or mob it
 /// picks), for the aim's dot; `None` when it aims at nothing.
-pub fn set_aim_point(at: Option<Vec3>) {
+pub fn set_aim_point(at: Option<(Vec3, Option<Vec3>)>) {
     if let Some(s) = xr_state().as_mut().and_then(|x| x.session.as_mut()) {
         s.aim_point = at;
     }
@@ -1003,12 +1036,14 @@ pub fn right_grip_held() -> bool {
         .is_some_and(|s| s.pad.right_grip)
 }
 
-/// Where the right controller points on the open menu's panel, in texture coordinates
-/// from the top left, and whether its trigger is held.
+/// Where the active controller (the one whose trigger last went down) points on the open
+/// menu's panel, in texture coordinates from the top left, and whether its own trigger
+/// is held.
 pub fn pointer() -> Option<([f32; 2], bool)> {
     let guard = xr_state();
     let s = guard.as_ref()?.session.as_ref()?;
-    s.pointer.map(|(uv, click, _)| (uv, click))
+    let hand = s.active_hand;
+    s.pointers[hand].map(|(uv, _)| (uv, s.pad.triggers[hand] > 0.5))
 }
 
 /// Copies `frame` (the offscreen target the eye was drawn into) into eye `eye`'s
@@ -1177,62 +1212,108 @@ pub fn end_frame(queue: &wgpu::Queue) {
                 width,
                 height: width * aspect,
             });
-        // One dot: where the pointer is on a menu, the tip over the wrist's hotbar, or
-        // the block or mob the right hand aims at (its size kept to the eye).
+        // The dots: both controllers' points on a menu, or the right tip over the wrist's
+        // hotbar. In play, the crosshair lies on the block face (or faces the eye on a mob)
+        // the right hand aims at, its size growing with the distance.
         let head_at = s.head.map_or(Vec3::ZERO, |(_, p)| p);
-        let facing_head = |at: Vec3| {
-            let back = (head_at - at).normalize_or(Vec3::Z);
-            let x = Vec3::Y.cross(back).normalize_or(Vec3::X);
-            Quat::from_mat3(&glam::Mat3::from_cols(x, back.cross(x), back))
-        };
-        let aimed = s.aim_point.map(|offset| {
-            body_rotation(s.body_yaw).inverse() * offset + head_at - s.last_lean
-        });
-        let spot = if let Some(((_, click, at), panel)) = s.pointer.zip(s.menu_pose) {
-            let rotation = quat(panel.orientation);
-            Some((rotation, at + rotation * Vec3::new(0.0, 0.0, 0.005), 0.015, click))
-        } else if let Some(at) = s.wrist_point {
-            Some((facing_head(at), at, 0.01, s.pad.triggers[1] > 0.5))
-        } else {
-            aimed.map(|at| {
-                let back = (head_at - at).normalize_or(Vec3::Z);
-                let distance = (head_at - at).length();
-                (facing_head(at), at + back * 0.02, (0.004 * distance).clamp(0.008, 0.08), false)
-            })
-        };
-        let dot_size = spot.map_or(0.015, |(_, _, size, _)| size);
-        let dot_at = spot.and_then(|(rotation, at, _, click)| {
-            let colour = if click {
-                wgpu::Color { r: 1.0, g: 0.85, b: 0.2, a: 1.0 }
+        let facing = |normal: Vec3, at: Vec3| {
+            let hint = if normal.y.abs() > 0.9 {
+                // A floor or a ceiling: the cross squares with the way the eye looks.
+                let ahead = at - head_at;
+                Vec3::new(ahead.x, 0.0, ahead.z).normalize_or(Vec3::NEG_Z) * -normal.y.signum()
             } else {
-                wgpu::Color::WHITE
+                Vec3::Y
             };
-            s.dot.fill(&s.device, queue, colour).ok()?;
-            Some(pose(rotation, at))
-        });
+            let x = hint.cross(normal).normalize_or(Vec3::X);
+            Quat::from_mat3(&glam::Mat3::from_cols(x, normal.cross(x), normal))
+        };
+        let mut spots: [Option<(xr::Posef, f32)>; 2] = [None; 2];
+        let mut colours = [wgpu::Color::WHITE; 2];
+        let yellow = wgpu::Color { r: 1.0, g: 0.85, b: 0.2, a: 1.0 };
+        let mut cross_at = None;
+        if let Some(panel) = s.menu_pose {
+            let rotation = quat(panel.orientation);
+            for i in 0..2 {
+                if let Some((_, at)) = s.pointers[i] {
+                    let active = i == s.active_hand;
+                    colours[i] = match (active, s.pad.triggers[i] > 0.5) {
+                        (true, true) => yellow,
+                        (true, false) => wgpu::Color::WHITE,
+                        _ => wgpu::Color { r: 0.55, g: 0.55, b: 0.6, a: 1.0 },
+                    };
+                    let size = if active { 0.015 } else { 0.011 };
+                    spots[i] = Some((pose(rotation, at + rotation * Vec3::new(0.0, 0.0, 0.005)), size));
+                }
+            }
+        } else if let Some(at) = s.wrist_point {
+            let back = (head_at - at).normalize_or(Vec3::Z);
+            if s.pad.triggers[1] > 0.5 {
+                colours[1] = yellow;
+            }
+            spots[1] = Some((pose(facing(back, at), at), 0.01));
+        } else if let Some((offset, normal)) = s.aim_point {
+            let body = body_rotation(s.body_yaw).inverse();
+            let at = body * offset + head_at - s.last_lean;
+            let distance = (head_at - at).length();
+            let back = (head_at - at).normalize_or(Vec3::Z);
+            let normal = normal.map(|n| (body * n).normalize_or(back)).filter(|n| n.dot(back) > 0.0);
+            let normal = normal.unwrap_or(back);
+            cross_at = Some((
+                pose(facing(normal, at), at + normal * 0.01),
+                (0.022 * distance).clamp(0.02, 0.3),
+            ));
+        }
+        for i in 0..2 {
+            if spots[i].is_some() && s.dots[i].fill(&s.device, queue, colours[i]).is_err() {
+                spots[i] = None;
+            }
+        }
+        if cross_at.is_some() && !s.cross_ready {
+            s.cross_ready = draw_cross(&s.device, queue, &s.blit_alpha, &mut s.cross);
+        }
+        let cross_at = cross_at.filter(|_| s.cross_ready);
         let dot_rect = xr::Rect2Di {
             offset: xr::Offset2Di { x: 0, y: 0 },
             extent: xr::Extent2Di { width: 16, height: 16 },
         };
-        let dot = xr::CompositionLayerQuad::new()
-            .space(&s.local)
-            .eye_visibility(xr::EyeVisibility::BOTH)
-            .sub_image(
-                xr::SwapchainSubImage::new()
-                    .swapchain(&s.dot.handle)
-                    .image_array_index(0)
-                    .image_rect(dot_rect),
-            )
-            .pose(dot_at.unwrap_or(pose(Quat::IDENTITY, Vec3::ZERO)))
-            .size(xr::Extent2Df {
-                width: dot_size,
-                height: dot_size,
-            });
+        let dot_layers = [0, 1].map(|i| {
+            spots[i].map(|(at, size)| {
+                xr::CompositionLayerQuad::new()
+                    .space(&s.local)
+                    .eye_visibility(xr::EyeVisibility::BOTH)
+                    .sub_image(
+                        xr::SwapchainSubImage::new()
+                            .swapchain(&s.dots[i].handle)
+                            .image_array_index(0)
+                            .image_rect(dot_rect),
+                    )
+                    .pose(at)
+                    .size(xr::Extent2Df { width: size, height: size })
+            })
+        });
+        let cross_rect = xr::Rect2Di {
+            offset: xr::Offset2Di { x: 0, y: 0 },
+            extent: xr::Extent2Di { width: CROSS_PIXELS as i32, height: CROSS_PIXELS as i32 },
+        };
+        let cross = cross_at.map(|(at, size)| {
+            xr::CompositionLayerQuad::new()
+                .space(&s.local)
+                .layer_flags(xr::CompositionLayerFlags::BLEND_TEXTURE_SOURCE_ALPHA)
+                .eye_visibility(xr::EyeVisibility::BOTH)
+                .sub_image(
+                    xr::SwapchainSubImage::new()
+                        .swapchain(&s.cross.handle)
+                        .image_array_index(0)
+                        .image_rect(cross_rect),
+                )
+                .pose(at)
+                .size(xr::Extent2Df { width: size, height: size })
+        });
         // In play the hotbar goes to the left wrist and the head's panel keeps the rest.
         let wrist = (s.panel_drawn == Some(Panel::Head))
             .then_some(s.hotbar.zip(forearm(&s.hands)))
             .flatten();
-        if let Some((hotbar, left)) = wrist {
+        let wrist_layers = wrist.map(|(hotbar, left)| {
             let (at, size) = wrist_quad(left, hotbar);
             let [x, y, w, h] = hotbar.crop.map(|v| v.round() as i32);
             let crop = xr::Rect2Di {
@@ -1272,44 +1353,79 @@ pub fn end_frame(queue: &wgpu::Queue) {
                     Vec3::new(0.0, (HUD_WIDTH * aspect - head_height) / 2.0, -HUD_DISTANCE),
                 ))
                 .size(xr::Extent2Df { width: HUD_WIDTH, height: head_height });
-            if dot_at.is_some() {
-                s.stream.end(
-                    state.predicted_display_time,
-                    xr::EnvironmentBlendMode::OPAQUE,
-                    &[layer, &head, &wrist, &dot],
-                )
-            } else {
-                s.stream.end(
-                    state.predicted_display_time,
-                    xr::EnvironmentBlendMode::OPAQUE,
-                    &[layer, &head, &wrist],
-                )
-            }
-        } else if s.panel_drawn.is_some() && dot_at.is_some() {
-            s.stream.end(
-                state.predicted_display_time,
-                xr::EnvironmentBlendMode::OPAQUE,
-                &[layer, &panel, &dot],
-            )
+            (head, wrist)
+        });
+        let mut layers: Vec<&xr::CompositionLayerBase<'_, xr::Vulkan>> = vec![layer];
+        if let Some((head, wrist)) = &wrist_layers {
+            layers.push(head);
+            layers.push(wrist);
         } else if s.panel_drawn.is_some() {
-            s.stream.end(
-                state.predicted_display_time,
-                xr::EnvironmentBlendMode::OPAQUE,
-                &[layer, &panel],
-            )
-        } else {
-            s.stream.end(
-                state.predicted_display_time,
-                xr::EnvironmentBlendMode::OPAQUE,
-                &[layer],
-            )
+            layers.push(&panel);
         }
+        if let Some(cross) = &cross {
+            layers.push(cross);
+        }
+        for dot in dot_layers.iter().flatten() {
+            layers.push(dot);
+        }
+        s.stream.end(
+            state.predicted_display_time,
+            xr::EnvironmentBlendMode::OPAQUE,
+            &layers,
+        )
     } else {
         s.stream
             .end(state.predicted_display_time, xr::EnvironmentBlendMode::OPAQUE, &[])
     };
     if let Err(e) = result {
         log::warn!("Horizon VR: xrEndFrame: {e}");
+    }
+}
+
+/// Draws the aim's crosshair into `chain` once: a white plus with a dark rim, so it shows
+/// on light and dark blocks alike. Returns whether it was drawn.
+fn draw_cross(device: &wgpu::Device, queue: &wgpu::Queue, blit: &blit::Blit, chain: &mut blit::EyeChain) -> bool {
+    use wgpu::util::DeviceExt;
+    let n = CROSS_PIXELS as i32;
+    let mut pixels = Vec::with_capacity((n * n * 4) as usize);
+    // Arms 4 px wide (14..18) from 3 to 29, a 2 px rim around them.
+    let arm = |x: i32, y: i32, rim: i32| {
+        let across = (14 - rim..18 + rim).contains(&x);
+        let along = (3 - rim..29 + rim).contains(&y);
+        across && along
+    };
+    for y in 0..n {
+        for x in 0..n {
+            let white = arm(x, y, 0) || arm(y, x, 0);
+            let rim = arm(x, y, 2) || arm(y, x, 2);
+            pixels.extend_from_slice(match (white, rim) {
+                (true, _) => &[255, 255, 255, 255],
+                (false, true) => &[40, 40, 40, 255],
+                _ => &[0, 0, 0, 0],
+            });
+        }
+    }
+    let texture = device.create_texture_with_data(
+        queue,
+        &wgpu::TextureDescriptor {
+            label: Some("Horizon VR crosshair"),
+            size: wgpu::Extent3d { width: CROSS_PIXELS, height: CROSS_PIXELS, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        },
+        wgpu::util::TextureDataOrder::LayerMajor,
+        &pixels,
+    );
+    match chain.draw(device, queue, blit, &texture) {
+        Ok(()) => true,
+        Err(e) => {
+            log::warn!("Horizon VR: crosshair: {e}");
+            false
+        }
     }
 }
 

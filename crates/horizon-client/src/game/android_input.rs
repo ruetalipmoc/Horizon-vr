@@ -114,19 +114,18 @@ pub(super) fn pad_state() -> PadState {
 }
 
 /// VR: the Touch controllers on top of any other controller. Right stick turns (the head
-/// looks up and down), left stick walks, A jumps, B sneaks, triggers use and attack,
-/// grips change the hotbar slot, the menu button pauses.
+/// looks up and down), left stick walks, A jumps, B goes back, Y opens the inventory,
+/// triggers use and attack, the sticks' clicks sprint and sneak, the menu button pauses.
+/// X (dropping) and the grips (F5, F3, one item from the carried stack) are `xr_buttons`'.
 fn with_touch_controllers(mut pad: PadState, touch: horizon_xr::Pad) -> PadState {
     for (held, button) in [
         (touch.a, Button::South),
         (touch.b, Button::East),
-        (touch.x, Button::West),
-        (touch.y, Button::North),
+        // Y with X held throws the rest of the stack (`xr_buttons`), it opens nothing.
+        (touch.y && !touch.x, Button::North),
         (touch.menu, Button::Start),
         (touch.left_click, Button::LeftStick),
         (touch.right_click, Button::RightStick),
-        (touch.left_grip, Button::LeftBumper),
-        (touch.right_grip, Button::RightBumper),
     ] {
         if held {
             pad.set(button, true);
@@ -147,10 +146,10 @@ fn with_touch_controllers(mut pad: PadState, touch: horizon_xr::Pad) -> PadState
     } else {
         touch
     };
-    // Pointing at a menu, the right trigger clicks there (`xr_pointer`), not the pad.
-    let touch = if horizon_xr::pointer().is_some() {
-        // ...and the right stick scrolls there (`xr_pointer`).
-        horizon_xr::Pad { triggers: [touch.triggers[0], 0.0], right: [0.0; 2], ..touch }
+    // In a menu the triggers click where their controllers point (`xr_pointer`), not the
+    // pad, and the right stick scrolls there.
+    let touch = if horizon_xr::menu_open() {
+        horizon_xr::Pad { triggers: [0.0; 2], right: [0.0; 2], ..touch }
     } else {
         touch
     };
@@ -578,23 +577,26 @@ impl super::Game<'_> {
         if pressed && let Some(slot) = horizon_xr::wrist_slot() {
             self.hotbar_presses.push(slot);
         }
-        // The aim's dot: the nearer of the block and the mob the right hand picks.
+        // The aim's crosshair: on the nearer of the block (lying on its face) and the mob
+        // the right hand picks.
         let aim = self.eye_position().and_then(|eye| {
-            let block = self.pick().map(|hit| hit.point);
+            let hit = self.pick();
+            let face = hit.map(|hit| glam::Vec3::new(hit.face[0] as f32, hit.face[1] as f32, hit.face[2] as f32));
+            let block = hit.map(|hit| hit.point);
             // mob_hit's point is from the mob's feet.
             let mob = self.mob_hit().map(|(i, _, at)| {
                 let feet = &self.mobs[i].position;
                 [feet.x as f64 + at[0], feet.y as f64 + at[1], feet.z as f64 + at[2]]
             });
             let distance = |p: &[f64; 3]| (0..3).map(|i| (p[i] - eye[i]).powi(2)).sum::<f64>();
-            let at = match (block, mob) {
-                (Some(b), Some(m)) => Some(if distance(&m) < distance(&b) { m } else { b }),
-                (b, m) => b.or(m),
-            }?;
-            Some(glam::Vec3::new(
-                (at[0] - eye[0]) as f32,
-                (at[1] - eye[1]) as f32,
-                (at[2] - eye[2]) as f32,
+            let (at, normal) = match (block, mob) {
+                (Some(b), Some(m)) if distance(&m) < distance(&b) => (m, None),
+                (Some(b), _) => (b, face),
+                (None, m) => (m?, None),
+            };
+            Some((
+                glam::Vec3::new((at[0] - eye[0]) as f32, (at[1] - eye[1]) as f32, (at[2] - eye[2]) as f32),
+                normal,
             ))
         });
         horizon_xr::set_aim_point(aim.filter(|_| self.screen == super::Screen::Playing));
@@ -652,9 +654,87 @@ impl super::Game<'_> {
             s.mouse.push(MouseInput::Button(0, click));
         }
     }
+    /// VR: the buttons that are no controller button. X throws one item, and Y while X is
+    /// held the rest of the stack: the held item in play (Q, Control+Q), in a menu the
+    /// carried stack (clicks outside the window) or else the slot pointed at. In a menu the
+    /// right grip puts one item of the carried stack where the pointer is (a right click).
+    /// In play the left grip alone changes the camera (F5), both grips together show or
+    /// hide the debug screen (F3).
+    fn xr_buttons(&mut self) {
+        use std::sync::atomic::{AtomicU8, Ordering};
+        use winit::keyboard::{KeyCode, ModifiersState};
+        // Last frame's buttons: 1 X, 2 Y, 4 left grip, 8 right grip; 16 both grips were
+        // held during this left grip's press.
+        static HELD: AtomicU8 = AtomicU8::new(0);
+        let Some(pad) = horizon_xr::pad() else {
+            return;
+        };
+        let now = u8::from(pad.x) | u8::from(pad.y) << 1 | u8::from(pad.left_grip) << 2 | u8::from(pad.right_grip) << 3;
+        let before = HELD.load(Ordering::Relaxed);
+        let pressed = |bit: u8| now & bit != 0 && before & bit == 0;
+        let released = |bit: u8| now & bit == 0 && before & bit != 0;
+        let mut chord = before & 16;
+        if now & 12 == 12 {
+            chord = 16;
+        }
+        let in_menu = self.title.is_none() && self.screen != super::Screen::Playing;
+        let playing = self.title.is_none() && self.screen == super::Screen::Playing;
+        let throw = if pressed(1) {
+            Some(false)
+        } else if pad.x && pressed(2) {
+            Some(true)
+        } else {
+            None
+        };
+        if let Some(all) = throw {
+            if in_menu && self.carried.is_some() {
+                // A click outside the window throws the carried stack: the right button one
+                // item, the left all of it.
+                let back = horizon_xr::pointer().zip(self.renderer.as_ref()).map(|((uv, _), r)| {
+                    [f64::from(uv[0]) * f64::from(r.config.width), f64::from(uv[1]) * f64::from(r.config.height)]
+                });
+                let mut s = shared();
+                s.mouse.push(MouseInput::Move([1.0, 1.0]));
+                let button = if all { 0 } else { 1 };
+                s.mouse.push(MouseInput::Button(button, true));
+                s.mouse.push(MouseInput::Button(button, false));
+                if let Some(back) = back {
+                    s.mouse.push(MouseInput::Move(back));
+                }
+            } else if in_menu || playing {
+                let modifiers = self.modifiers;
+                self.modifiers = if all { ModifiersState::CONTROL } else { ModifiersState::empty() };
+                let _ = self.key_pressed(KeyCode::KeyQ, KeyCode::KeyQ);
+                self.modifiers = modifiers;
+            }
+        }
+        if in_menu && pressed(8) && self.carried.is_some() {
+            let mut s = shared();
+            s.mouse.push(MouseInput::Button(1, true));
+            s.mouse.push(MouseInput::Button(1, false));
+        }
+        if playing && now & 12 == 12 && before & 12 != 12 {
+            use horizon_client::debug_keys::KeyAction;
+            self.physical_keys.insert(KeyCode::F3);
+            self.debug_key(KeyCode::F3, KeyAction::Press);
+            self.physical_keys.remove(&KeyCode::F3);
+            self.debug_key(KeyCode::F3, KeyAction::Release);
+        }
+        if released(4) {
+            if playing && chord == 0 {
+                self.cycle_camera();
+            }
+            chord = 0;
+        }
+        if now & 4 == 0 && now & 8 == 0 {
+            chord = 0;
+        }
+        HELD.store(now | chord, Ordering::Relaxed);
+    }
     pub(super) fn android_input_frame(&mut self, event_loop: &dyn super::event_loop::EventLoopCtl) {
         if horizon_xr::active() {
             self.xr_pointer();
+            self.xr_buttons();
         }
         use winit::{
             application::ApplicationHandler,

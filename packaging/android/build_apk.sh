@@ -18,11 +18,6 @@ mkdir -p "$OUT/stage/lib/arm64-v8a"
 if [ -n "${OPENXR_LOADER:-}" ]; then
   cp "$OPENXR_LOADER" "$OUT/stage/lib/arm64-v8a/libopenxr_loader.so"
 fi
-# PLAY 2D's game (HorizonFlatActivity): FLAT_LIB names a libhorizon.so built from the
-# flat version, shipped as libhorizon2d.so.
-if [ -n "${FLAT_LIB:-}" ]; then
-  "$NDK"/toolchains/llvm/prebuilt/*/bin/llvm-strip -o "$OUT/stage/lib/arm64-v8a/libhorizon2d.so" "$FLAT_LIB"
-fi
 # HorizonActivity (the soft keyboard bridge) -> classes.dex.
 rm -rf "$OUT/java" && mkdir -p "$OUT/java/classes"
 "${JAVAC:-javac}" --release 8 -nowarn -classpath "$PLATFORM" -d "$OUT/java/classes" \
@@ -39,7 +34,7 @@ with zipfile.ZipFile(f"{out}/unaligned.apk", "a", zipfile.ZIP_DEFLATED) as z:
     z.write(f"{out}/java/classes.dex", "classes.dex")
     z.write(f"{out}/stage/lib/arm64-v8a/libhorizon.so", "lib/arm64-v8a/libhorizon.so")
     import os
-    for extra in ("libopenxr_loader.so", "libhorizon2d.so"):
+    for extra in ("libopenxr_loader.so",):
         path = f"{out}/stage/lib/arm64-v8a/{extra}"
         if os.path.exists(path):
             z.write(path, f"lib/arm64-v8a/{extra}")

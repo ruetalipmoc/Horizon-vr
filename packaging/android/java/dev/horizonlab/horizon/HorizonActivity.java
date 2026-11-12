@@ -22,19 +22,7 @@ import android.view.inputmethod.InputMethodManager;
  */
 public class HorizonActivity extends NativeActivity {
     static {
-        System.loadLibrary(flatProcess() ? "horizon2d" : "horizon");
-    }
-
-    /**
-     * Whether this is the flat game's own process (HorizonFlatActivity, ":flat"): it runs
-     * the original 2D game, libhorizon2d.so, never next to the VR game's library.
-     */
-    static boolean flatProcess() {
-        try {
-            return android.app.Application.getProcessName().endsWith(":flat");
-        } catch (Throwable e) {
-            return false;
-        }
+        System.loadLibrary("horizon");
     }
 
     static native void nativeText(String text);

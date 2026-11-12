@@ -64,17 +64,6 @@
             </intent-filter>
         </activity>
         <activity
-            android:name=".HorizonFlatActivity"
-            android:process=":flat"
-            android:exported="false"
-            android:screenOrientation="sensorLandscape"
-            android:launchMode="singleTask"
-            android:windowSoftInputMode="adjustNothing|stateHidden"
-            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|keyboard|navigation|uiMode|density|smallestScreenSize|fontScale|locale|layoutDirection|touchscreen|mcc|mnc|colorMode|fontWeightAdjustment|grammaticalGender">
-            <!-- The original flat game (packaging/android/build_apk.sh's FLAT_LIB). -->
-            <meta-data android:name="android.app.lib_name" android:value="horizon2d" />
-        </activity>
-        <activity
             android:name=".ProfileActivity"
             android:exported="false"
             android:theme="@style/HorizonProfile"

@@ -41,7 +41,7 @@ public class ProfileActivity extends Activity implements View.OnClickListener {
     private EditText name;
     private TextView message;
     private SkinView preview;
-    private Button pick, model, play, play2d, driver, systemDriver, microsoft, deviceCode, signOut;
+    private Button pick, model, play, driver, systemDriver, microsoft, deviceCode, signOut;
     private TextView driverStatus, accountStatus, accountChip;
     private EditText clientId;
     private LinearLayout codeBox, advancedBox;
@@ -129,10 +129,6 @@ public class ProfileActivity extends Activity implements View.OnClickListener {
         play.setMinHeight(Ui.dp(this, 60));
         play.setOnClickListener(this);
         left.addView(play, Ui.gap(this, 6));
-        // The flat game on a big screen in the headset's room, as on a phone.
-        play2d = Ui.button(this, Ui.t("ИГРАТЬ В 2D", "PLAY 2D"), false);
-        play2d.setOnClickListener(this);
-        left.addView(play2d, Ui.gap(this, 6));
         root.addView(left, new LinearLayout.LayoutParams(0, -1, 1));
 
         // Right: settings.
@@ -393,16 +389,11 @@ public class ProfileActivity extends Activity implements View.OnClickListener {
                 saveModel();
             } catch (Exception ignored) {
             }
-        } else if (v == play || v == play2d) {
+        } else if (v == play) {
             if (!saveProfile()) return;
-            // The game reads this file at start: there, it does not start VR.
-            java.io.File flat = new java.io.File(getFilesDir(), "launch-2d");
-            try {
-                if (v == play2d) flat.createNewFile();
-                else flat.delete();
-            } catch (java.io.IOException ignored) {
-            }
-            Intent i = new Intent(this, v == play2d ? HorizonFlatActivity.class : HorizonActivity.class);
+            // Left by an older build's "PLAY 2D": the game would start without VR.
+            new java.io.File(getFilesDir(), "launch-2d").delete();
+            Intent i = new Intent(this, HorizonActivity.class);
             i.addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
             startActivity(i);
             finish();
