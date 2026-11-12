@@ -5,6 +5,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+mod vr_pack;
+
 /// This release's version: release.yml builds it with `HORIZON_VERSION` from the tag
 /// (docs/versioning.md); a build from source says Cargo.toml's.
 const VERSION: &str = match option_env!("HORIZON_VERSION") {
@@ -74,6 +76,73 @@ launcher's asset store into the same folder, checking every file. It is optional
 game is silent. Nothing is downloaded; it needs the version played once from the official launcher.
 ";
 
+/// `horizon-prepare vr-pack` (`vr_pack`): the server jar from Mojang if needed, the
+/// resources from the official launcher's copy, then `horizon-derived.zip` beside this
+/// program, for Horizon VR on the headset.
+fn vr_pack_main() -> ExitCode {
+    let log = |line: &str| {
+        let mut out = std::io::stdout().lock();
+        let _ = writeln!(out, "{line}");
+        let _ = out.flush();
+    };
+    let Some(root) = default_root() else {
+        log("error: no research-lock.json beside this program: keep the folder's files together");
+        return ExitCode::from(2);
+    };
+    log("Horizon VR: making horizon-derived.zip from your own Minecraft: Java Edition");
+    log("(play Minecraft once from the official launcher first, so its files are on this computer)\n");
+    let run = || -> Result<(PathBuf, usize), String> {
+        let lock = horizon_prepare::artifacts::Lock::read(&root)?;
+        let sha1 = lock
+            .json
+            .get("minecraft")
+            .and_then(|m| m.get("server_sha1"))
+            .and_then(|v| v.as_str())
+            .ok_or("research-lock.json has no server_sha1")?
+            .to_owned();
+        let manifest = lock
+            .json
+            .get("minecraft")
+            .and_then(|m| m.get("manifest_sha1"))
+            .and_then(|v| v.as_str())
+            .ok_or("research-lock.json has no manifest_sha1")?
+            .to_owned();
+        vr_pack::version_file(&root, &lock.version, &manifest, &log)?;
+        let server_jar = std::env::var_os("HORIZON_SERVER_JAR")
+            .map(PathBuf::from)
+            .map_or_else(|| vr_pack::server_jar(&root, &sha1, &log), Ok)?;
+        let options = horizon_prepare::Options {
+            root: root.clone(),
+            import: true,
+            minecraft_dir: std::env::var_os("HORIZON_MINECRAFT_DIR").map(PathBuf::from),
+            server_jar: Some(server_jar),
+            java_home: None,
+            inputs: Default::default(),
+            output: None,
+        };
+        let resources = horizon_prepare::prepare_with_progress(&options, &log, &|_| {})?;
+        let out = root.join("horizon-derived.zip");
+        log("Zipping horizon-derived.zip");
+        let files = vr_pack::zip_derived(&resources, &out)?;
+        Ok((out, files))
+    };
+    match run() {
+        Ok((out, files)) => {
+            log(&format!("\nDone: {} ({files} files).", out.display()));
+            log("Copy it to the headset, into Android/data/dev.horizonlab.horizon/files/,");
+            log("or pick it with the button on Horizon VR's setup screen.");
+            log("It is made from Mojang's game: keep it for yourself, do not share it.");
+            log("\nFatto: copia horizon-derived.zip nel visore (Android/data/dev.horizonlab.horizon/files/)");
+            log("oppure sceglilo col pulsante della schermata di setup. Non condividerlo.");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            log(&format!("\nerror: {e}"));
+            ExitCode::FAILURE
+        }
+    }
+}
+
 /// The folder with research-lock.json: beside the executable in a release folder, else the
 /// current folder or one above it (a checkout, with the binary in target/).
 fn default_root() -> Option<PathBuf> {
@@ -90,6 +159,11 @@ fn default_root() -> Option<PathBuf> {
 }
 
 fn main() -> ExitCode {
+    if std::env::args().nth(1).as_deref() == Some("vr-pack") {
+        let code = vr_pack_main();
+        vr_pack::pause();
+        return code;
+    }
     let mut options = horizon_prepare::Options {
         root: PathBuf::new(),
         import: false,
