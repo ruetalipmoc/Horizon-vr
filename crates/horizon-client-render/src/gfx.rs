@@ -12437,7 +12437,9 @@ fn fake_xr_fov() -> Option<[f32; 4]> {
 #[cfg(target_os = "android")]
 fn xr_cull_view(eyes: &[horizon_xr::Eye; 2], far: f32) -> View {
     let [a, b] = eyes.map(|e| e.fov);
-    let margin = 1.15;
+    // The eyes' own frustums with a little to spare for the reprojection's edges: a wide
+    // margin draws sections no eye sees.
+    let margin = 1.05;
     let fov = [
         a[0].min(b[0]) * margin,
         a[1].max(b[1]) * margin,

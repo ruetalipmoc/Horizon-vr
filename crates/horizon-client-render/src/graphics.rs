@@ -639,7 +639,7 @@ impl Graphics {
     /// models falls back to `Off`, which draws exactly vanilla's leaves.
     pub fn leaf_culling_effective(&self, resource_packs: &[String]) -> LeafCullingMode {
         if self.vanilla_models(resource_packs) {
-            self.leaf_culling
+            vr_leaf_culling(self.leaf_culling)
         } else {
             LeafCullingMode::Off
         }
@@ -651,11 +651,20 @@ impl Graphics {
         server_packs: impl IntoIterator<Item = &'a str>,
     ) -> LeafCullingMode {
         if self.vanilla_models_with_server_packs(resource_packs, server_packs) {
-            self.leaf_culling
+            vr_leaf_culling(self.leaf_culling)
         } else {
             LeafCullingMode::Off
         }
     }
+}
+/// VR: leaves left at `Off` cull the faces only seen through two leaves (`Hidden`): a
+/// crown looks the same from outside, with far fewer faces for the headset to draw twice.
+fn vr_leaf_culling(mode: LeafCullingMode) -> LeafCullingMode {
+    #[cfg(target_os = "android")]
+    if mode == LeafCullingMode::Off && horizon_xr::active() {
+        return LeafCullingMode::Hidden;
+    }
+    mode
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct Graphics {
