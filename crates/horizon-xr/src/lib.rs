@@ -197,7 +197,7 @@ struct Xr {
     session: Option<Session>,
     /// The compositor sharpens the eyes' layer (`XR_FB_composition_layer_settings`).
     sharpen: bool,
-    /// Application SpaceWarp is on (`XR_FB_space_warp`, `HORIZON_XR_SPACEWARP=0` off).
+    /// Application SpaceWarp is on (`XR_FB_space_warp`, only with `HORIZON_XR_SPACEWARP=1`).
     space_warp: bool,
 }
 
@@ -453,9 +453,11 @@ fn open_instance(ctx: &Context) -> Result<(wgpu::Instance, wgpu::Adapter), Strin
     wanted.fb_composition_layer_settings = available.fb_composition_layer_settings;
     // The headset's CPU and GPU clocks, held high (`set_performance_levels`).
     wanted.ext_performance_settings = available.ext_performance_settings;
-    // Application SpaceWarp: half the frames drawn, the rest made up by the headset.
+    // Application SpaceWarp: half the frames drawn, the rest made up by the headset. Off
+    // unless `HORIZON_XR_SPACEWARP=1`: on the Quest 3 its made-up frames made play
+    // unplayable (2026-11-12), the motion vectors' convention is still to be found.
     wanted.fb_space_warp =
-        available.fb_space_warp && std::env::var("HORIZON_XR_SPACEWARP").as_deref() != Ok("0");
+        available.fb_space_warp && std::env::var("HORIZON_XR_SPACEWARP").as_deref() == Ok("1");
     let instance = entry
         .create_instance(
             &xr::ApplicationInfo {
