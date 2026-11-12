@@ -132,6 +132,21 @@ fn with_touch_controllers(mut pad: PadState, touch: horizon_xr::Pad) -> PadState
             pad.set(button, true);
         }
     }
+    // The left stick walks where the head faces, though the player's yaw follows the
+    // right hand's aim: turned by the difference (Minecraft's input: x left, z ahead).
+    let touch = {
+        let turn = horizon_xr::move_turn().to_radians();
+        let (sin, cos) = turn.sin_cos();
+        let (x, z) = (-touch.left[0], touch.left[1]);
+        let (x, z) = (x * cos - z * sin, x * sin + z * cos);
+        horizon_xr::Pad { left: [-x, z], ..touch }
+    };
+    // Over the wrist's hotbar, the right trigger picks a slot (`xr_look`), not the pad.
+    let touch = if horizon_xr::wrist_slot().is_some() {
+        horizon_xr::Pad { triggers: [touch.triggers[0], 0.0], ..touch }
+    } else {
+        touch
+    };
     // Pointing at a menu, the right trigger clicks there (`xr_pointer`), not the pad.
     let touch = if horizon_xr::pointer().is_some() {
         // ...and the right stick scrolls there (`xr_pointer`).
@@ -552,16 +567,37 @@ impl super::Game<'_> {
             }
         });
         horizon_xr::set_hotbar(hotbar);
-        static TOUCHED: Mutex<Option<usize>> = Mutex::new(None);
-        let touched = horizon_xr::wrist_slot();
-        let mut last = TOUCHED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if touched != *last {
-            *last = touched;
-            if let Some(slot) = touched {
-                self.hotbar_presses.push(slot);
-            }
+        // The slot the right controller is over on the wrist, picked when its trigger goes
+        // down there (as QuestCraft does).
+        static TRIGGER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        let trigger = horizon_xr::pad().is_some_and(|p| p.triggers[1] > 0.5);
+        let pressed = trigger && !TRIGGER.swap(trigger, std::sync::atomic::Ordering::Relaxed);
+        if !trigger {
+            TRIGGER.store(false, std::sync::atomic::Ordering::Relaxed);
         }
-        drop(last);
+        if pressed && let Some(slot) = horizon_xr::wrist_slot() {
+            self.hotbar_presses.push(slot);
+        }
+        // The aim's dot: the nearer of the block and the mob the right hand picks.
+        let aim = self.eye_position().and_then(|eye| {
+            let block = self.pick().map(|hit| hit.point);
+            // mob_hit's point is from the mob's feet.
+            let mob = self.mob_hit().map(|(i, _, at)| {
+                let feet = &self.mobs[i].position;
+                [feet.x as f64 + at[0], feet.y as f64 + at[1], feet.z as f64 + at[2]]
+            });
+            let distance = |p: &[f64; 3]| (0..3).map(|i| (p[i] - eye[i]).powi(2)).sum::<f64>();
+            let at = match (block, mob) {
+                (Some(b), Some(m)) => Some(if distance(&m) < distance(&b) { m } else { b }),
+                (b, m) => b.or(m),
+            }?;
+            Some(glam::Vec3::new(
+                (at[0] - eye[0]) as f32,
+                (at[1] - eye[1]) as f32,
+                (at[2] - eye[2]) as f32,
+            ))
+        });
+        horizon_xr::set_aim_point(aim.filter(|_| self.screen == super::Screen::Playing));
         let Some((yaw, pitch)) = horizon_xr::look(self.yaw) else {
             return;
         };

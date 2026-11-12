@@ -44,8 +44,8 @@ const HUD_WIDTH: f32 = 1.3;
 /// The hotbar's panel on the inside of the left forearm: its width in metres, and where
 /// it sits from the left controller's grip (its axes: toward the elbow is +Z).
 const WRIST_WIDTH: f32 = 0.2;
-// Off the arm's inside by a few centimetres (the arm is about 11 cm thick).
-const WRIST_AT: Vec3 = Vec3::new(0.085, 0.0, 0.13);
+// Just over the arm's top face (the arm is about 11 cm thick), 13 cm toward the elbow.
+const WRIST_AT: Vec3 = Vec3::new(0.064, 0.0, 0.13);
 /// How near (metres) the right controller's tip must come to the wrist's hotbar to pick
 /// a slot.
 const WRIST_TOUCH: f32 = 0.1;
@@ -232,8 +232,17 @@ struct Session {
     clicks: [(bool, std::time::Instant, bool); 2],
     /// The hotbar in the HUD's image (`set_hotbar`).
     hotbar: Option<Hotbar>,
-    /// The hotbar slot the right controller touches on the wrist.
+    /// The hotbar slot the right controller's tip is over on the wrist, and that point
+    /// in LOCAL space (where its dot goes).
     wrist_slot: Option<usize>,
+    wrist_point: Option<Vec3>,
+    /// Where the right controller aims in the world (camera-relative, `set_aim_point`).
+    aim_point: Option<Vec3>,
+    /// The player's yaw to add to the left stick so it walks where the head faces.
+    move_turn: f32,
+    /// The body's turn and the head's lean at the last frame, to put world points back
+    /// into LOCAL space.
+    last_lean: Vec3,
     /// Where the head started; leaning away from it moves the view.
     anchor: Option<Vec3>,
     /// The player's yaw minus the head's yaw in LOCAL space, in degrees.
@@ -710,6 +719,10 @@ fn start_session(xr: &Xr, device: &wgpu::Device, raw_device: vk::Device) -> Resu
         clicks: [(false, std::time::Instant::now(), false); 2],
         hotbar: None,
         wrist_slot: None,
+        wrist_point: None,
+        aim_point: None,
+        move_turn: 0.0,
+        last_lean: Vec3::ZERO,
         anchor: None,
         body_yaw: 0.0,
         last_yaw: None,
@@ -855,24 +868,38 @@ pub fn begin_frame() -> Option<FrameViews> {
         }
         _ => None,
     };
-    s.wrist_slot = match (s.hotbar, forearm(&s.hands), s.hands[Hand::RightAim as usize]) {
+    s.last_lean = lean;
+    // The right controller's tip over the wrist's hotbar: the slot under it (anywhere
+    // over the panel, picked by where along it the tip is) and the point it is over.
+    let hover = match (s.hotbar, forearm(&s.hands), s.hands[Hand::RightAim as usize]) {
         (Some(hotbar), Some(left), Some((_, tip))) if !s.menu_open => {
             let (at, size) = wrist_quad(left, hotbar);
-            let local = quat(at.orientation).inverse() * (tip - vec3(at.position));
+            let rotation = quat(at.orientation);
+            let local = rotation.inverse() * (tip - vec3(at.position));
             let inside = local.z.abs() < WRIST_TOUCH
                 && local.x.abs() <= size[0] / 2.0
-                && local.y.abs() <= size[1] / 2.0;
-            inside.then(|| {
-                let [x, y, w, h] = hotbar.crop;
-                let px = x + (local.x / size[0] + 0.5) * w;
-                let py = y + (0.5 - local.y / size[1]) * h;
-                let [first, top, slot, row] = hotbar.slots;
-                let index = ((px - first) / slot).floor();
-                (py >= top && py <= top + row && (0.0..9.0).contains(&index)).then_some(index as usize)
-            })
-            .flatten()
+                && local.y.abs() <= size[1] / 2.0 + 0.02;
+            inside
+                .then(|| {
+                    let [x, _, w, _] = hotbar.crop;
+                    let px = x + (local.x / size[0] + 0.5) * w;
+                    let [first, _, slot, _] = hotbar.slots;
+                    let index = ((px - first) / slot).floor().clamp(0.0, 8.0) as usize;
+                    let on_panel = vec3(at.position) + rotation * Vec3::new(local.x, local.y, 0.004);
+                    (index, on_panel)
+                })
         }
         _ => None,
+    };
+    s.wrist_slot = hover.map(|(slot, _)| slot);
+    s.wrist_point = hover.map(|(_, at)| at);
+    // The left stick walks where the head faces, not where the right hand aims (the
+    // player's yaw follows the aim, for picking blocks).
+    s.move_turn = match s.hands[Hand::RightAim as usize] {
+        Some((aim, _)) => wrap_degrees(
+            yaw_pitch(body * head_rotation).0 - yaw_pitch(body * aim).0,
+        ),
+        None => 0.0,
     };
     s.pending = Some((state, views));
     s.eye_drawn = [false; 2];
@@ -946,9 +973,26 @@ pub fn set_hotbar(hotbar: Option<Hotbar>) {
     }
 }
 
-/// The hotbar slot the right controller's tip touches on the left wrist.
+/// The hotbar slot the right controller's tip is over on the left wrist (its trigger
+/// picks it).
 pub fn wrist_slot() -> Option<usize> {
     xr_state().as_ref()?.session.as_ref()?.wrist_slot
+}
+
+/// Degrees to turn the left stick by so it walks where the head faces.
+pub fn move_turn() -> f32 {
+    xr_state()
+        .as_ref()
+        .and_then(|x| x.session.as_ref())
+        .map_or(0.0, |s| s.move_turn)
+}
+
+/// Where the right controller aims in the world, camera-relative (the block or mob it
+/// picks), for the aim's dot; `None` when it aims at nothing.
+pub fn set_aim_point(at: Option<Vec3>) {
+    if let Some(s) = xr_state().as_mut().and_then(|x| x.session.as_mut()) {
+        s.aim_point = at;
+    }
 }
 
 /// The right controller's grip is squeezed (a shift-click while pointing at a menu).
@@ -1133,15 +1177,38 @@ pub fn end_frame(queue: &wgpu::Queue) {
                 width,
                 height: width * aspect,
             });
-        let dot_at = s.pointer.zip(s.menu_pose).and_then(|((_, click, at), panel)| {
+        // One dot: where the pointer is on a menu, the tip over the wrist's hotbar, or
+        // the block or mob the right hand aims at (its size kept to the eye).
+        let head_at = s.head.map_or(Vec3::ZERO, |(_, p)| p);
+        let facing_head = |at: Vec3| {
+            let back = (head_at - at).normalize_or(Vec3::Z);
+            let x = Vec3::Y.cross(back).normalize_or(Vec3::X);
+            Quat::from_mat3(&glam::Mat3::from_cols(x, back.cross(x), back))
+        };
+        let aimed = s.aim_point.map(|offset| {
+            body_rotation(s.body_yaw).inverse() * offset + head_at - s.last_lean
+        });
+        let spot = if let Some(((_, click, at), panel)) = s.pointer.zip(s.menu_pose) {
+            let rotation = quat(panel.orientation);
+            Some((rotation, at + rotation * Vec3::new(0.0, 0.0, 0.005), 0.015, click))
+        } else if let Some(at) = s.wrist_point {
+            Some((facing_head(at), at, 0.01, s.pad.triggers[1] > 0.5))
+        } else {
+            aimed.map(|at| {
+                let back = (head_at - at).normalize_or(Vec3::Z);
+                let distance = (head_at - at).length();
+                (facing_head(at), at + back * 0.02, (0.004 * distance).clamp(0.008, 0.08), false)
+            })
+        };
+        let dot_size = spot.map_or(0.015, |(_, _, size, _)| size);
+        let dot_at = spot.and_then(|(rotation, at, _, click)| {
             let colour = if click {
                 wgpu::Color { r: 1.0, g: 0.85, b: 0.2, a: 1.0 }
             } else {
                 wgpu::Color::WHITE
             };
             s.dot.fill(&s.device, queue, colour).ok()?;
-            let rotation = quat(panel.orientation);
-            Some(pose(rotation, at + rotation * Vec3::new(0.0, 0.0, 0.005)))
+            Some(pose(rotation, at))
         });
         let dot_rect = xr::Rect2Di {
             offset: xr::Offset2Di { x: 0, y: 0 },
@@ -1158,8 +1225,8 @@ pub fn end_frame(queue: &wgpu::Queue) {
             )
             .pose(dot_at.unwrap_or(pose(Quat::IDENTITY, Vec3::ZERO)))
             .size(xr::Extent2Df {
-                width: 0.015,
-                height: 0.015,
+                width: dot_size,
+                height: dot_size,
             });
         // In play the hotbar goes to the left wrist and the head's panel keeps the rest.
         let wrist = (s.panel_drawn == Some(Panel::Head))
@@ -1205,11 +1272,19 @@ pub fn end_frame(queue: &wgpu::Queue) {
                     Vec3::new(0.0, (HUD_WIDTH * aspect - head_height) / 2.0, -HUD_DISTANCE),
                 ))
                 .size(xr::Extent2Df { width: HUD_WIDTH, height: head_height });
-            s.stream.end(
-                state.predicted_display_time,
-                xr::EnvironmentBlendMode::OPAQUE,
-                &[layer, &head, &wrist],
-            )
+            if dot_at.is_some() {
+                s.stream.end(
+                    state.predicted_display_time,
+                    xr::EnvironmentBlendMode::OPAQUE,
+                    &[layer, &head, &wrist, &dot],
+                )
+            } else {
+                s.stream.end(
+                    state.predicted_display_time,
+                    xr::EnvironmentBlendMode::OPAQUE,
+                    &[layer, &head, &wrist],
+                )
+            }
         } else if s.panel_drawn.is_some() && dot_at.is_some() {
             s.stream.end(
                 state.predicted_display_time,

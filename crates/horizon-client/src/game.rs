@@ -15036,7 +15036,14 @@ impl Game<'_> {
         else {
             return;
         };
-        let z_rot = if left { -0.1 } else { 0.1 };
+        // VR: the arm lies straight along the forearm (the wrist's hotbar sits on it).
+        let z_rot = if vr_active() {
+            0.0
+        } else if left {
+            -0.1
+        } else {
+            0.1
+        };
         let pose = |p: &horizon_client::mobs::Part| {
             let mut pose = p.pose;
             pose[3] = 0.0;
