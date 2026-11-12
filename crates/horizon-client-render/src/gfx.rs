@@ -1482,6 +1482,8 @@ pub struct Renderer {
     pub drawn_sections: usize,
     pub section_draws: usize,
     pub section_draw_calls: usize,
+    /// The section draws' indices at the last frame (VR's report: the vertex load).
+    pub section_indices: u64,
     /// `draw_frame`'s frames past its early returns, and the one whose statistics are shown.
     frame_serial: u64,
     stats_frame: u64,
@@ -4988,6 +4990,7 @@ impl Renderer {
             drawn_sections: 0,
             section_draws: 0,
             section_draw_calls: 0,
+            section_indices: 0,
             frame_serial: 0,
             stats_frame: 0,
             uploaded_bytes: 0,
@@ -7525,12 +7528,13 @@ impl Renderer {
         self.xr_view = None;
         horizon_xr::note_renderer(|| {
             format!(
-                "sections resident {}, drawn {}, draws {}, draw calls {}, culled {:?}, GPU \
+                "sections resident {}, drawn {}, draws {}, draw calls {}, indices {}k, culled {:?}, GPU \
                  culling {}, size {}x{}; slowest passes (ms per eye) {}",
                 self.resident_sections(),
                 self.drawn_sections,
                 self.section_draws,
                 self.section_draw_calls,
+                self.section_indices / 1000,
                 self.culled_sections(),
                 self.gpu_culling(),
                 self.config.width,
@@ -9583,6 +9587,10 @@ impl Renderer {
         // pass's counts come back, with the CPU's part of it: the sections the walk listed but
         // those whose solid quads the pass drew (it counts them), its draws and every call.
         let cpu = [listed - gpu_solid, section_draws, section_draw_calls];
+        self.section_indices = self.draws[..section_draws.min(self.draws.len())]
+            .iter()
+            .map(|d| u64::from(d[0]) * u64::from(d[1]))
+            .sum();
         if gpu_frame && let Some(gpu) = &mut self.gpu_culling {
             gpu.dispatch(&mut encoder, self.own_timing.as_mut());
         } else {

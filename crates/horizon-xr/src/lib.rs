@@ -442,6 +442,8 @@ fn open_instance(ctx: &Context) -> Result<(wgpu::Instance, wgpu::Adapter), Strin
     wanted.khr_android_create_instance = true;
     // The compositor's sharpening, where offered: finer far detail for almost nothing.
     wanted.fb_composition_layer_settings = available.fb_composition_layer_settings;
+    // The headset's CPU and GPU clocks, held high (`set_performance_levels`).
+    wanted.ext_performance_settings = available.ext_performance_settings;
     let instance = entry
         .create_instance(
             &xr::ApplicationInfo {
@@ -601,10 +603,34 @@ pub fn open_device(
         Err(e) => return Some(Err(e)),
     };
     match start_session(xr, &device, raw_device) {
-        Ok(session) => xr.session = Some(session),
+        Ok(session) => {
+            set_performance_levels(&xr.instance, &session.session);
+            xr.session = Some(session);
+        }
         Err(e) => log::error!("Horizon VR: no session: {e}"),
     }
     Some(Ok((device, queue)))
+}
+
+/// Asks the headset to keep its CPU and GPU clocks high (`XR_EXT_performance_settings`):
+/// left to itself the Quest starts low and climbs only as frames run late, so the game
+/// drops frames first. `HORIZON_XR_PERF`: `boost`, `high` (the default), `power` or `off`.
+fn set_performance_levels(instance: &xr::Instance, session: &xr::Session<xr::Vulkan>) {
+    let Some(ext) = instance.exts().ext_performance_settings else {
+        log::info!("Horizon VR: no XR_EXT_performance_settings");
+        return;
+    };
+    let level = match std::env::var("HORIZON_XR_PERF").as_deref() {
+        Ok("off") => return,
+        Ok("boost") => xr::sys::PerfSettingsLevelEXT::BOOST,
+        Ok("power") => xr::sys::PerfSettingsLevelEXT::SUSTAINED_LOW,
+        _ => xr::sys::PerfSettingsLevelEXT::SUSTAINED_HIGH,
+    };
+    for domain in [xr::sys::PerfSettingsDomainEXT::CPU, xr::sys::PerfSettingsDomainEXT::GPU] {
+        // Safety: a live session of this instance, which loaded the extension.
+        let result = unsafe { (ext.perf_settings_set_performance_level)(session.as_raw(), domain, level) };
+        log::info!("Horizon VR: performance level {level:?} for {domain:?}: {result:?}");
+    }
 }
 
 type Opened = Result<(wgpu::Device, wgpu::Queue, vk::Device), wgpu::RequestDeviceError>;

@@ -189,6 +189,9 @@ pub(super) fn take_used() -> (bool, bool) {
     used
 }
 
+/// VR: food or a potion is held at the mouth (the use button held by the gesture).
+static EATING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 fn has(source: u32, bits: u32) -> bool {
     source & bits == bits
 }
@@ -481,7 +484,6 @@ impl super::Game<'_> {
     fn xr_hand_actions(&mut self, hand: Option<([f64; 3], f64)>) -> Option<[f64; 3]> {
         use std::time::{Duration, Instant};
         static MINING: Mutex<Option<([i32; 3], Instant)>> = Mutex::new(None);
-        static EATING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
         let now = Instant::now();
         let playing = self.screen == super::Screen::Playing && self.title.is_none();
         let place = playing.then_some(()).and(hand).zip(self.eye_position());
@@ -577,18 +579,12 @@ impl super::Game<'_> {
         if pressed && let Some(slot) = horizon_xr::wrist_slot() {
             self.hotbar_presses.push(slot);
         }
-        // The left trigger uses along the left controller: while it is (even lightly) held,
-        // the player looks where the left hand points, so the use lands there, and the
-        // right hand stays free to attack.
-        static LEFT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-        let left_trigger = horizon_xr::pad().map_or(0.0, |p| p.triggers[0]);
+        // The player looks along the right hand; the left trigger's uses go along the left
+        // one (`xr_left_use`).
         let playing = self.screen == super::Screen::Playing && self.title.is_none();
-        let was_left = LEFT.load(std::sync::atomic::Ordering::Relaxed);
-        let look_left = playing && if was_left { left_trigger > 0.08 } else { left_trigger > 0.15 };
-        LEFT.store(look_left, std::sync::atomic::Ordering::Relaxed);
-        horizon_xr::set_look_hand(look_left);
-        // The crosshairs: the looking hand's on the nearer of the block (lying on its face)
-        // and the mob the player picks; the other hand's on the block along it.
+        let look_left = false;
+        // The crosshairs: the right hand's on the nearer of the block (lying on its face)
+        // and the mob the player picks; the left hand's on the block along it.
         let aim = self.eye_position().and_then(|eye| {
             let hit = self.pick();
             let face = hit.map(|hit| glam::Vec3::new(hit.face[0] as f32, hit.face[1] as f32, hit.face[2] as f32));
@@ -674,6 +670,28 @@ impl super::Game<'_> {
             }
             s.mouse.push(MouseInput::Button(0, click));
         }
+    }
+    /// VR: a use (the left trigger) goes along the left controller, for that moment only:
+    /// the player turns to it, picks again, uses, and turns back, so the right hand keeps
+    /// aiming and attacking meanwhile. Food at the mouth is eaten wherever the hand points.
+    pub(super) fn xr_left_use(&mut self, use_now: impl FnOnce(&mut Self)) {
+        let angles = horizon_xr::hand_angles(true)
+            .filter(|_| !EATING.load(std::sync::atomic::Ordering::Relaxed));
+        let Some((yaw, pitch)) = angles else {
+            use_now(self);
+            return;
+        };
+        let (old_yaw, old_pitch) = (self.yaw, self.pitch);
+        let (old_hit, old_mob) = (self.tick_hit.take(), self.tick_mob.take());
+        self.yaw = old_yaw + ((yaw - old_yaw + 180.0).rem_euclid(360.0) - 180.0);
+        self.pitch = pitch.clamp(-90.0, 90.0);
+        self.tick_hit = Some(self.pick());
+        self.tick_mob = Some(self.mob_hit());
+        use_now(self);
+        self.yaw = old_yaw;
+        self.pitch = old_pitch;
+        self.tick_hit = old_hit;
+        self.tick_mob = old_mob;
     }
     /// VR: the buttons that are no controller button. X throws one item, and Y while X is
     /// held the rest of the stack: the held item in play (Q, Control+Q), in a menu the
