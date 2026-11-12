@@ -53,36 +53,66 @@ It plays Minecraft: Java Edition 26.3 in VR, with motion controls in the spirit 
 
 ## Install on the Meta Quest 3
 
-1. Turn on **developer mode** for your Quest 3 (Meta Horizon app on the phone → your headset → Developer mode).
-2. Download **`Horizon-VR-v*.apk`** from the [latest release](https://github.com/Boboetto/Horizon-vr/releases/latest) and install it:
-   - **SideQuest**: connect the headset and drag the APK onto SideQuest ("Install APK file from folder");
-   - or **Meta Quest Developer Hub**: drag the APK onto the device;
-   - or in the headset: open the APK from the Quest browser's downloads and install the package (unknown sources allowed).
-3. In the headset, open **App Library → Unknown sources → Horizon VR**.
+1. Turn on **developer mode** for your Quest 3: in the **Meta Horizon** app on your phone → Menu → Devices →
+   your headset → Headset settings → Developer mode (Meta asks you to create a free developer account once).
+2. Download **`Horizon-VR-v*.apk`** from the [latest release](https://github.com/Boboetto/Horizon-vr/releases/latest).
+3. Install it with **SideQuest**: connect the headset to the computer with its USB-C cable, accept "Allow USB debugging"
+   in the headset, then drag the APK onto the SideQuest window.
+   (Or drag it onto **Meta Quest Developer Hub**.)
+4. In the headset, open **App Library → Unknown sources → Horizon VR**.
 
-## First start: the game files
+## First start: horizon-derived.zip, from your computer to the Quest 3
 
-The first start downloads the official game files from Mojang (about 525 MB). Then it asks for
-**`horizon-derived.zip`**: game data that only Minecraft's own Java code can produce, so you make it on a computer
-from your own copy of the game, in one step:
+On its first start Horizon VR needs **`horizon-derived.zip`**: game data that only Minecraft's own Java code can make,
+so your computer makes it from your own copy of the game, then sends it to the headset over Wi-Fi.
+The computer and the Quest 3 must be on the **same Wi-Fi network**.
 
-1. On your computer, play **Minecraft: Java Edition 26.3** once from the **official launcher**.
-2. Download **`Horizon-VR-Prepare-windows.zip`** (or `-linux.zip`) from the
-   [latest release](https://github.com/Boboetto/Horizon-vr/releases/latest) and unzip it.
-3. Double-click **`make-horizon-derived.bat`** (Linux: `make-horizon-derived.sh`). After about a minute
-   `horizon-derived.zip` is in the same folder. No Java to install: it uses the Minecraft launcher's own.
-4. Copy `horizon-derived.zip` to the headset, into `Android/data/dev.horizonlab.horizon/files/`
-   (SideQuest's file manager or a USB cable), or pick it with the button on Horizon VR's setup screen.
+**On the computer**
+
+1. Play **Minecraft: Java Edition 26.3** once from the **official Minecraft launcher**, then close it.
+2. Download **`Horizon-VR-Prepare-windows.zip`** (Linux: `Horizon-VR-Prepare-linux.zip`) from the
+   [latest release](https://github.com/Boboetto/Horizon-vr/releases/latest) and unzip it (right click → Extract all).
+3. Open the unzipped folder and double-click **`make-horizon-derived.bat`** (Linux: `make-horizon-derived.sh`).
+   - If Windows shows **"Windows protected your PC"**: click **More info**, then **Run anyway**.
+   - If Windows asks about the **firewall**: tick **Private networks** and click **Allow access**.
+     Without this the headset cannot find the computer.
+4. Wait about a minute. When the window says **"Now put on the headset"**, leave it **open**.
+
+**On the Quest 3**
+
+5. Open **Horizon VR**. On the setup screen press **"Get it from my computer (Wi-Fi)"**.
+6. When it says **"Got horizon-derived.zip ✓"**, press **"Download game files"**: it downloads the official
+   game files from Mojang (about 700 MB, a few minutes on Wi-Fi), then the game starts.
+7. You can now close the window on the computer.
+
+**If the headset cannot find the computer** ("no computer answered"):
+
+- check that the window on the computer is still open and says "Now put on the headset";
+- check that the Quest 3 and the computer are on the same Wi-Fi (not a guest network);
+- on Windows, allow the program in the firewall: Start → "Allow an app through Windows Firewall" →
+  tick `horizon-prepare` for **Private**, then press the button in the headset again.
+
+**Or with the cable**: connect the Quest 3 to the computer with USB, open SideQuest, click the **folder icon**
+(top right), go to `Android/data/dev.horizonlab.horizon/files/` and drag `horizon-derived.zip` there.
+Then open Horizon VR and press **"Download game files"**.
 
 `horizon-derived.zip` is made from Mojang's game: keep it for yourself and do not share it.
 
 ## In italiano
 
-Horizon VR è un APK standalone per **Meta Quest 3**: Minecraft: Java Edition 26.3 in VR, senza PC.
-Serve possedere Minecraft Java. Installa l'APK dell'ultima release con **SideQuest** o **Meta Quest Developer Hub**
-(modalità sviluppatore attiva), poi aprilo da **Libreria → Origini sconosciute**. Al primo avvio scarica i file
-ufficiali da Mojang e chiede `horizon-derived.zip`: crealo sul PC con `Horizon-VR-Prepare` (doppio clic su
-`make-horizon-derived.bat`, dopo aver avviato una volta Minecraft 26.3 dal launcher ufficiale) e copialo nel visore.
+1. **Visore:** attiva la modalità sviluppatore (app Meta Horizon sul telefono → Dispositivi → visore →
+   Impostazioni → Modalità sviluppatore) e installa l'APK dell'ultima release trascinandolo su **SideQuest**.
+   Si apre da **Libreria → Origini sconosciute → Horizon VR**.
+2. **Computer:** avvia una volta Minecraft: Java Edition 26.3 dal launcher ufficiale. Scarica ed estrai
+   `Horizon-VR-Prepare-windows.zip` e fai doppio clic su `make-horizon-derived.bat`.
+   Se Windows dice "PC protetto": *Ulteriori informazioni → Esegui comunque*. Se chiede del firewall:
+   spunta *Reti private → Consenti accesso*. Dopo circa un minuto la finestra dice "Now put on the headset":
+   **lasciala aperta**.
+3. **Quest 3** (stesso Wi-Fi del computer): apri Horizon VR, premi **"Get it from my computer (Wi-Fi)"**,
+   poi **"Download game files"**. Finito, puoi chiudere la finestra sul computer.
+4. Se il visore non trova il computer: controlla che la finestra sia aperta, che siate sullo stesso Wi-Fi e
+   che il firewall di Windows consenta `horizon-prepare` sulle reti private. In alternativa, col cavo: in
+   SideQuest icona cartella → `Android/data/dev.horizonlab.horizon/files/` → trascina lì `horizon-derived.zip`.
 
 ## Building
 

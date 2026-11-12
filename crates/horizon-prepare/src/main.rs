@@ -129,11 +129,12 @@ fn vr_pack_main() -> ExitCode {
     match run() {
         Ok((out, files)) => {
             log(&format!("\nDone: {} ({files} files).", out.display()));
-            log("Copy it to the headset, into Android/data/dev.horizonlab.horizon/files/,");
-            log("or pick it with the button on Horizon VR's setup screen.");
-            log("It is made from Mojang's game: keep it for yourself, do not share it.");
-            log("\nFatto: copia horizon-derived.zip nel visore (Android/data/dev.horizonlab.horizon/files/)");
-            log("oppure sceglilo col pulsante della schermata di setup. Non condividerlo.");
+            log("It is made from Mojang's game: keep it for yourself, do not share it. / Non condividerlo.");
+            if let Err(e) = vr_pack::share(&out, &log) {
+                log(&format!("\nCould not offer it on the network ({e}): copy it to the headset with a cable,"));
+                log("into Android/data/dev.horizonlab.horizon/files/ (see the README).");
+                log("Non riesco a offrirlo in rete: copialo nel visore col cavo (vedi il README).");
+            }
             ExitCode::SUCCESS
         }
         Err(e) => {

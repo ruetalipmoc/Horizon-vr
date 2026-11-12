@@ -1,22 +1,24 @@
-Horizon VR - horizon-derived.zip maker
-=======================================
+Horizon VR - horizon-derived.zip
+================================
 
 ENGLISH
-1. Play Minecraft: Java Edition 26.3 once from the official Minecraft launcher
-   (you must own the game; this puts its files on this computer).
-2. Double-click make-horizon-derived.bat (Windows) or run make-horizon-derived.sh (Linux).
-   It downloads two small files from Mojang, works for about a minute and writes
-   horizon-derived.zip in this folder.
-3. Copy horizon-derived.zip to the headset, into Android/data/dev.horizonlab.horizon/files/
-   (SideQuest, or a USB cable), or pick it with the button on Horizon VR's setup screen.
-The zip is made from Mojang's game: keep it for yourself, do not share it.
+1. Play Minecraft: Java Edition 26.3 once from the official Minecraft launcher on this computer.
+2. Double-click make-horizon-derived.bat (Linux: make-horizon-derived.sh).
+   Windows may say "Windows protected your PC": click More info, then Run anyway.
+   If Windows asks about the firewall, tick Private networks and click Allow.
+3. Wait about a minute, until the window says "Now put on the headset". Leave the window open.
+4. On the Quest 3 (same Wi-Fi as this computer), open Horizon VR and press
+   "Get it from my computer (Wi-Fi)". When it says "Got horizon-derived.zip", press
+   "Download game files". You can close the window on the computer.
+horizon-derived.zip is made from Mojang's game: keep it for yourself, do not share it.
 
 ITALIANO
-1. Avvia una volta Minecraft: Java Edition 26.3 dal launcher ufficiale
-   (devi possedere il gioco; così i suoi file finiscono su questo computer).
-2. Doppio clic su make-horizon-derived.bat (Windows) o avvia make-horizon-derived.sh (Linux).
-   Scarica due piccoli file da Mojang, lavora circa un minuto e crea
-   horizon-derived.zip in questa cartella.
-3. Copia horizon-derived.zip nel visore, in Android/data/dev.horizonlab.horizon/files/
-   (SideQuest o cavo USB), oppure sceglilo col pulsante della schermata di setup di Horizon VR.
-Lo zip deriva dal gioco di Mojang: tienilo per te, non condividerlo.
+1. Avvia una volta Minecraft: Java Edition 26.3 dal launcher ufficiale su questo computer.
+2. Doppio clic su make-horizon-derived.bat (Linux: make-horizon-derived.sh).
+   Se Windows dice "PC protetto da Windows": clicca Ulteriori informazioni, poi Esegui comunque.
+   Se Windows chiede del firewall, spunta Reti private e clicca Consenti accesso.
+3. Aspetta circa un minuto, finché la finestra dice "Now put on the headset". Lasciala aperta.
+4. Sul Quest 3 (stesso Wi-Fi del computer) apri Horizon VR e premi
+   "Get it from my computer (Wi-Fi)". Quando appare "Got horizon-derived.zip", premi
+   "Download game files". Ora puoi chiudere la finestra sul computer.
+horizon-derived.zip deriva dal gioco di Mojang: tienilo per te, non condividerlo.

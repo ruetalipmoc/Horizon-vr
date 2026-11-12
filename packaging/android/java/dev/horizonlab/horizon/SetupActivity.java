@@ -93,7 +93,18 @@ public class SetupActivity extends Activity
                 }
             }
         });
+        // Horizon VR: horizon-derived.zip straight from the computer that made it, over the
+        // home Wi-Fi (Horizon-VR-Prepare offers it while its window is open).
+        Button fetch = Ui.button(this, "Get it from my computer (Wi-Fi)", nativeDefaultUrl().isEmpty());
+        fetch.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) {
+                fetchFromComputer();
+            }
+        });
         // A build with the data pack's address needs no file picked by hand.
+        if (nativeDefaultUrl().isEmpty() && !new File(home, "horizon-derived.zip").isFile()) {
+            card.addView(fetch, Ui.gap(this, 8));
+        }
         if (nativeDefaultUrl().isEmpty()) card.addView(pick, Ui.gap(this, 8));
         bar = new Ui.Bar(this);
         bar.setVisibility(View.GONE);
@@ -126,8 +137,8 @@ public class SetupActivity extends Activity
         card.addView(profile, Ui.gap(this, 14));
         if (!haveDerived()) {
             showNote(Ui.t(
-                    "В этой сборке нет адреса пакета данных Horizon. Положите horizon-derived.zip в папку игры (Android/data/dev.horizonlab.horizon/files) или установите сборку, где он указан.",
-                    "This build has no Horizon data pack address. Put horizon-derived.zip in the game folder (Android/data/dev.horizonlab.horizon/files) or install a build that has one."));
+                    "Нужен horizon-derived.zip: создайте его на компьютере программой Horizon-VR-Prepare и нажмите «Get it from my computer».",
+                    "First get horizon-derived.zip: make it on your computer with Horizon-VR-Prepare, keep its window open, then press Get it from my computer (Wi-Fi)."));
         }
         if (android.os.Build.VERSION.SDK_INT >= 33) {
             requestPermissions(new String[] {"android.permission.POST_NOTIFICATIONS"}, 1);
@@ -138,6 +149,92 @@ public class SetupActivity extends Activity
     }
 
     private static final int PICK_ZIP = 7;
+    /** Kept in step with crates/horizon-prepare/src/vr_pack.rs. */
+    private static final int FIND_PORT = 47821;
+
+    /**
+     * Asks the home network for a computer running Horizon-VR-Prepare (a UDP broadcast)
+     * and takes horizon-derived.zip from it: its length (8 bytes, big-endian) then its bytes.
+     */
+    private void fetchFromComputer() {
+        showNote("Looking for your computer… keep Horizon-VR-Prepare's window open on it.");
+        button.setEnabled(false);
+        new Thread(new Runnable() {
+            public void run() {
+                String msg;
+                File tmp = new File(home, "horizon-derived.zip.part");
+                try {
+                    java.net.InetAddress host = null;
+                    int port = 0;
+                    try (java.net.DatagramSocket udp = new java.net.DatagramSocket()) {
+                        udp.setBroadcast(true);
+                        udp.setSoTimeout(1500);
+                        byte[] ask = "HORIZON-VR-FIND".getBytes("US-ASCII");
+                        byte[] buf = new byte[64];
+                        for (int i = 0; i < 6 && host == null; i++) {
+                            udp.send(new java.net.DatagramPacket(ask, ask.length,
+                                    java.net.InetAddress.getByName("255.255.255.255"), FIND_PORT));
+                            java.net.DatagramPacket reply = new java.net.DatagramPacket(buf, buf.length);
+                            try {
+                                udp.receive(reply);
+                            } catch (java.net.SocketTimeoutException e) {
+                                continue;
+                            }
+                            String text = new String(reply.getData(), 0, reply.getLength(), "US-ASCII");
+                            if (text.startsWith("HORIZON-VR-HERE ")) {
+                                port = Integer.parseInt(text.substring(16).trim());
+                                host = reply.getAddress();
+                            }
+                        }
+                    }
+                    if (host == null) throw new java.io.IOException(
+                            "no computer answered. Is Horizon-VR-Prepare's window still open, on the same Wi-Fi? "
+                                    + "If Windows asked about the firewall, allow access, then try again.");
+                    final String found = host.getHostAddress();
+                    handler.post(new Runnable() {
+                        public void run() {
+                            showNote("Receiving horizon-derived.zip from " + found + "…");
+                        }
+                    });
+                    try (java.net.Socket socket = new java.net.Socket()) {
+                        socket.connect(new java.net.InetSocketAddress(host, port), 5000);
+                        socket.setSoTimeout(15000);
+                        java.io.DataInputStream in = new java.io.DataInputStream(socket.getInputStream());
+                        long left = in.readLong();
+                        if (left <= 4 || left > (1L << 30)) throw new java.io.IOException("bad size " + left);
+                        try (java.io.OutputStream out = new java.io.FileOutputStream(tmp)) {
+                            byte[] buf = new byte[1 << 16];
+                            boolean first = true;
+                            while (left > 0) {
+                                int n = in.read(buf, 0, (int) Math.min(buf.length, left));
+                                if (n < 0) throw new java.io.IOException("the transfer stopped");
+                                if (first && (n < 4 || buf[0] != 'P' || buf[1] != 'K'))
+                                    throw new java.io.IOException("this is not a zip archive");
+                                first = false;
+                                out.write(buf, 0, n);
+                                left -= n;
+                            }
+                        }
+                    }
+                    File dst = new File(home, "horizon-derived.zip");
+                    if (dst.exists() && !dst.delete()) throw new java.io.IOException("delete failed");
+                    if (!tmp.renameTo(dst)) throw new java.io.IOException("rename failed");
+                    msg = "Got horizon-derived.zip \u2713 Now tap Download game files.";
+                } catch (Exception e) {
+                    tmp.delete();
+                    msg = "Could not get it from your computer: "
+                            + String.valueOf(e.getMessage() != null ? e.getMessage() : e);
+                }
+                final String m = msg;
+                handler.post(new Runnable() {
+                    public void run() {
+                        showNote(m);
+                        button.setEnabled(true);
+                    }
+                });
+            }
+        }).start();
+    }
 
     @Override
     protected void onActivityResult(int request, int result, Intent data) {

@@ -119,6 +119,62 @@ pub fn version_file(root: &Path, version: &str, sha1: &str, log: &dyn Fn(&str)) 
     Ok(())
 }
 
+/// Where the headset's "Get it from my computer" button asks (UDP broadcast) and where
+/// this program answers with the zip (TCP). Kept in step with SetupActivity.java.
+pub const FIND_PORT: u16 = 47821;
+pub const SEND_PORT: u16 = 47822;
+const FIND: &[u8] = b"HORIZON-VR-FIND";
+
+/// Offers `zip` to the headset on the home network until this program closes: a headset
+/// asking on `FIND_PORT` hears back where to fetch it, and each connection to
+/// `SEND_PORT` gets its length (8 bytes, big-endian) then its bytes. Only answers inside
+/// the local network: the zip goes from the player's computer to the player's headset.
+pub fn share(zip: &Path, log: &dyn Fn(&str)) -> Result<(), String> {
+    let data = std::fs::read(zip).map_err(|e| format!("{}: {e}", zip.display()))?;
+    let udp = std::net::UdpSocket::bind(("0.0.0.0", FIND_PORT)).map_err(|e| format!("port {FIND_PORT}: {e}"))?;
+    let tcp = std::net::TcpListener::bind(("0.0.0.0", SEND_PORT)).map_err(|e| format!("port {SEND_PORT}: {e}"))?;
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 64];
+        while let Ok((n, from)) = udp.recv_from(&mut buf) {
+            if &buf[..n] == FIND && local(from.ip()) {
+                let _ = udp.send_to(format!("HORIZON-VR-HERE {SEND_PORT}").as_bytes(), from);
+            }
+        }
+    });
+    let sent = |ip: std::net::IpAddr| {
+        println!("\nSent to the headset ({ip}) / Inviato al visore ({ip}) \u{2713}");
+    };
+    std::thread::spawn(move || {
+        for stream in tcp.incoming().flatten() {
+            let Ok(peer) = stream.peer_addr() else { continue };
+            if !local(peer.ip()) {
+                continue;
+            }
+            let mut stream = stream;
+            let ok = stream
+                .write_all(&(data.len() as u64).to_be_bytes())
+                .and_then(|()| stream.write_all(&data))
+                .and_then(|()| stream.flush());
+            if ok.is_ok() {
+                sent(peer.ip());
+            }
+        }
+    });
+    log("\nNow put on the headset: on Horizon VR's setup screen press \"Get it from my computer\".");
+    log("Keep this window open until the headset has it. If Windows asks, allow access on private networks.");
+    log("Ora nel visore: nella schermata di setup di Horizon VR premi \"Get it from my computer\".");
+    log("Tieni aperta questa finestra finché il visore non l'ha ricevuto. Se Windows chiede, consenti l'accesso alle reti private.");
+    Ok(())
+}
+
+/// A home network's address: private IPv4 ranges, link-local, or the computer itself.
+fn local(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => v4.is_private() || v4.is_link_local() || v4.is_loopback(),
+        std::net::IpAddr::V6(v6) => v6.is_loopback() || (v6.segments()[0] & 0xffc0) == 0xfe80,
+    }
+}
+
 /// Waits for Enter, so a window opened by a double click stays to be read.
 pub fn pause() {
     print!("\nPress Enter to close / Premi Invio per chiudere... ");
