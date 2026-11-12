@@ -35,31 +35,11 @@ impl EyeChain {
         format: (vk::Format, wgpu::TextureFormat),
         size: [u32; 2],
     ) -> Result<Self, String> {
-        Self::with_usage(session, device, format, size, false)
-    }
-
-    /// `depth`: a depth image (AppSW's), else a colour one.
-    pub fn with_usage(
-        session: &xr::Session<xr::Vulkan>,
-        device: &wgpu::Device,
-        format: (vk::Format, wgpu::TextureFormat),
-        size: [u32; 2],
-        depth: bool,
-    ) -> Result<Self, String> {
-        let attachment = if depth {
-            xr::SwapchainUsageFlags::DEPTH_STENCIL_ATTACHMENT
-        } else {
-            xr::SwapchainUsageFlags::COLOR_ATTACHMENT
-        };
-        let hal_usage = if depth {
-            wgpu::TextureUses::DEPTH_STENCIL_WRITE
-        } else {
-            wgpu::TextureUses::COLOR_TARGET
-        };
         let handle = session
             .create_swapchain(&xr::SwapchainCreateInfo {
                 create_flags: xr::SwapchainCreateFlags::EMPTY,
-                usage_flags: attachment | xr::SwapchainUsageFlags::SAMPLED,
+                usage_flags: xr::SwapchainUsageFlags::COLOR_ATTACHMENT
+                    | xr::SwapchainUsageFlags::SAMPLED,
                 format: format.0.as_raw() as u32,
                 sample_count: 1,
                 width: size[0],
@@ -87,7 +67,7 @@ impl EyeChain {
                     sample_count: 1,
                     dimension: wgpu::TextureDimension::D2,
                     format: format.1,
-                    usage: hal_usage,
+                    usage: wgpu::TextureUses::COLOR_TARGET,
                     memory_flags: wgpu::hal::MemoryFlags::empty(),
                     view_formats: vec![],
                 };
@@ -123,24 +103,6 @@ impl EyeChain {
             })
             .collect();
         Ok(Self { handle, views })
-    }
-
-    /// Acquires the next image and waits for it; `release` gives it back.
-    pub fn acquire(&mut self) -> Result<&wgpu::TextureView, String> {
-        let index = self
-            .handle
-            .acquire_image()
-            .map_err(|e| format!("xrAcquireSwapchainImage: {e}"))? as usize;
-        self.handle
-            .wait_image(xr::Duration::INFINITE)
-            .map_err(|e| format!("xrWaitSwapchainImage: {e}"))?;
-        Ok(&self.views[index])
-    }
-
-    pub fn release(&mut self) -> Result<(), String> {
-        self.handle
-            .release_image()
-            .map_err(|e| format!("xrReleaseSwapchainImage: {e}"))
     }
 
     /// Acquires the next image, fills it with `color` and gives it back.
