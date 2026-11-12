@@ -447,12 +447,16 @@ impl super::Game<'_> {
         s.mouse.push(MouseInput::Button(0, false));
         Some(target)
     }
-    /// VR: what the right hand does by being somewhere. Its tip inside a block mines it
-    /// (the attack held on that block); food or a potion brought to the mouth is eaten
-    /// or drunk (use held). Returns where to look while mining.
+    /// VR: what the right hand does. A swing into a block mines it, as holding the
+    /// attack on it does, for a moment after each blow (keep swinging, in any direction,
+    /// to break it); resting the hand on a block does nothing. Food or a potion held
+    /// near the mouth is eaten or drunk (use held). Returns where to look while mining.
     fn xr_hand_actions(&mut self) -> Option<[f64; 3]> {
-        static MINING: Mutex<Option<[i32; 3]>> = Mutex::new(None);
+        use std::time::{Duration, Instant};
+        static LAST: Mutex<Option<(Instant, [f64; 3])>> = Mutex::new(None);
+        static MINING: Mutex<Option<([i32; 3], Instant)>> = Mutex::new(None);
         static EATING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        let now = Instant::now();
         let playing = self.screen == super::Screen::Playing && self.title.is_none();
         let place = playing
             .then(|| {
@@ -470,11 +474,21 @@ impl super::Game<'_> {
             if EATING.swap(false, std::sync::atomic::Ordering::Relaxed) {
                 s.mouse.push(MouseInput::Button(1, false));
             }
+            *LAST.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
             return None;
         };
-        // The mouth: a hand's width below the eyes.
+        // The hand's velocity since the last frame, in blocks (metres) a second.
+        let mut last = LAST.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let velocity = last.map_or([0.0; 3], |(t, p): (Instant, [f64; 3])| {
+            let dt = now.duration_since(t).as_secs_f64().max(1e-3);
+            [0, 1, 2].map(|i| (tip[i] - p[i]) / dt)
+        });
+        *last = Some((now, tip));
+        drop(last);
+        let speed = velocity.iter().map(|v| v * v).sum::<f64>().sqrt();
+        // The mouth: a little below the eyes; anywhere within 30 cm of it will do.
         let mouth = [eye[0], eye[1] - 0.12, eye[2]];
-        let near_mouth = (0..3).map(|i| (tip[i] - mouth[i]).powi(2)).sum::<f64>().sqrt() < 0.2;
+        let near_mouth = (0..3).map(|i| (tip[i] - mouth[i]).powi(2)).sum::<f64>().sqrt() < 0.3;
         let edible = near_mouth
             && self.visible_hand_items()[0].as_ref().is_some_and(|stack| {
                 let components = self
@@ -487,26 +501,42 @@ impl super::Game<'_> {
         if EATING.swap(edible, std::sync::atomic::Ordering::Relaxed) != edible {
             s.mouse.push(MouseInput::Button(1, edible));
         }
-        let block = tip.map(|v| v.floor() as i32);
-        let solid = !edible && !self.res.facts().is_air(self.world.block(block[0], block[1], block[2]));
-        if solid {
-            if *mining != Some(block) {
-                if mining.is_some() {
-                    s.mouse.push(MouseInput::Button(0, false));
-                }
-                *mining = Some(block);
+        // A blow: the hand moving fast with a solid block where it is, or just ahead of it.
+        let struck = (!edible && speed > 1.6)
+            .then(|| {
+                [0.0, 0.15, 0.3].into_iter().find_map(|ahead| {
+                    let at = [0, 1, 2].map(|i| tip[i] + velocity[i] / speed * ahead);
+                    let block = at.map(|v| v.floor() as i32);
+                    (!self.res.facts().is_air(self.world.block(block[0], block[1], block[2])))
+                        .then_some(block)
+                })
+            })
+            .flatten();
+        if let Some(block) = struck {
+            if mining.is_some_and(|(b, _)| b != block) {
+                s.mouse.push(MouseInput::Button(0, false));
+            }
+            if mining.is_none_or(|(b, _)| b != block) {
                 s.mouse.push(MouseInput::Button(0, true));
             }
-            return Some(block.map(|v| f64::from(v) + 0.5));
+            *mining = Some((block, now + Duration::from_millis(350)));
         }
-        if mining.take().is_some() {
-            s.mouse.push(MouseInput::Button(0, false));
+        match *mining {
+            Some((block, until)) if now < until => Some(block.map(|v| f64::from(v) + 0.5)),
+            Some(_) => {
+                *mining = None;
+                s.mouse.push(MouseInput::Button(0, false));
+                None
+            }
+            None => None,
         }
-        None
     }
     pub(super) fn xr_look(&mut self) {
         horizon_xr::set_menu(self.title.is_some() || self.screen != super::Screen::Playing);
-        if let Some(at) = self.xr_hand_actions().or_else(|| self.xr_swing())
+        // A swing at a mob first, else the hand's own actions (they track every frame).
+        let swing = self.xr_swing();
+        let hand = self.xr_hand_actions();
+        if let Some(at) = swing.or(hand)
             && let Some(eye) = self.eye_position()
         {
             // Look at the mob being hit until the swing's click lands.

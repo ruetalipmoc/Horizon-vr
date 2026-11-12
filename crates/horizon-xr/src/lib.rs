@@ -48,7 +48,7 @@ const WRIST_WIDTH: f32 = 0.2;
 const WRIST_AT: Vec3 = Vec3::new(0.085, 0.0, 0.13);
 /// How near (metres) the right controller's tip must come to the wrist's hotbar to pick
 /// a slot.
-const WRIST_TOUCH: f32 = 0.06;
+const WRIST_TOUCH: f32 = 0.1;
 
 /// Where the hotbar is in the HUD's image (pixels from the top left), set by the game
 /// each frame: the part shown on the wrist, the slots' row and each slot's width.
@@ -184,6 +184,8 @@ struct Xr {
     /// The device extensions the runtime needs (`xrGetVulkanDeviceExtensionsKHR`).
     device_extensions: Vec<&'static CStr>,
     session: Option<Session>,
+    /// The compositor sharpens the eyes' layer (`XR_FB_composition_layer_settings`).
+    sharpen: bool,
 }
 
 struct Session {
@@ -226,6 +228,8 @@ struct Session {
     dot: blit::EyeChain,
     /// The right controller's aim, steadied for pointing (`steady`).
     steady_aim: Option<Quat>,
+    /// The sticks' clicks: the last raw state, since when, and the state let through.
+    clicks: [(bool, std::time::Instant, bool); 2],
     /// The hotbar in the HUD's image (`set_hotbar`).
     hotbar: Option<Hotbar>,
     /// The hotbar slot the right controller touches on the wrist.
@@ -407,6 +411,8 @@ fn open_instance(ctx: &Context) -> Result<(wgpu::Instance, wgpu::Adapter), Strin
     let mut wanted = xr::ExtensionSet::default();
     wanted.khr_vulkan_enable = true;
     wanted.khr_android_create_instance = true;
+    // The compositor's sharpening, where offered: finer far detail for almost nothing.
+    wanted.fb_composition_layer_settings = available.fb_composition_layer_settings;
     let instance = entry
         .create_instance(
             &xr::ApplicationInfo {
@@ -518,6 +524,7 @@ fn open_instance(ctx: &Context) -> Result<(wgpu::Instance, wgpu::Adapter), Strin
         physical_device,
         device_extensions,
         session: None,
+        sharpen: available.fb_composition_layer_settings,
     });
     if let Some(marker) = marker() {
         let _ = std::fs::write(marker, b"1");
@@ -700,6 +707,7 @@ fn start_session(xr: &Xr, device: &wgpu::Device, raw_device: vk::Device) -> Resu
         pointer: None,
         dot,
         steady_aim: None,
+        clicks: [(false, std::time::Instant::now(), false); 2],
         hotbar: None,
         wrist_slot: None,
         anchor: None,
@@ -754,7 +762,20 @@ pub fn begin_frame() -> Option<FrameViews> {
     }
     if s.focused {
         let read = s.actions.read(&s.session);
-        s.pad = read.clone().unwrap_or_default();
+        let mut pad = read.clone().unwrap_or_default();
+        // A stick's click chatters as it goes down: it counts once it has held still for
+        // 40 ms (toggled sneak and sprint flipped twice).
+        let now = std::time::Instant::now();
+        for (i, raw) in [pad.left_click, pad.right_click].into_iter().enumerate() {
+            if raw != s.clicks[i].0 {
+                s.clicks[i] = (raw, now, s.clicks[i].2);
+            } else if now.duration_since(s.clicks[i].1) > Duration::from_millis(40) {
+                s.clicks[i].2 = raw;
+            }
+        }
+        pad.left_click = s.clicks[0].2;
+        pad.right_click = s.clicks[1].2;
+        s.pad = pad;
         s.stats.pad = Some(read.map_err(|e| e.to_string()));
     }
     let located = state
@@ -836,7 +857,7 @@ pub fn begin_frame() -> Option<FrameViews> {
     };
     s.wrist_slot = match (s.hotbar, forearm(&s.hands), s.hands[Hand::RightAim as usize]) {
         (Some(hotbar), Some(left), Some((_, tip))) if !s.menu_open => {
-            let (at, size) = wrist_quad(left, hotbar);
+            let (at, size) = wrist_quad(left, hotbar, head_position);
             let local = quat(at.orientation).inverse() * (tip - vec3(at.position));
             let inside = local.z.abs() < WRIST_TOUCH
                 && local.x.abs() <= size[0] / 2.0
@@ -893,10 +914,19 @@ fn forearm(hands: &[Option<(Quat, Vec3)>; 4]) -> Option<(Quat, Vec3)> {
 
 /// The hotbar's panel on the left forearm for `left` (the forearm's pose in LOCAL space):
 /// its pose (facing the forearm's inside, reading toward the hand) and size.
-fn wrist_quad((rotation, position): (Quat, Vec3), hotbar: Hotbar) -> (xr::Posef, [f32; 2]) {
-    let turn = rotation * Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+fn wrist_quad((rotation, position): (Quat, Vec3), hotbar: Hotbar, head: Vec3) -> (xr::Posef, [f32; 2]) {
     let size = [WRIST_WIDTH, WRIST_WIDTH * hotbar.crop[3] / hotbar.crop[2].max(1.0)];
-    (pose(turn, position + rotation * WRIST_AT), size)
+    // Along the forearm, a little toward the head, and turned to face it: readable
+    // without twisting the wrist like a watch.
+    let along = position + rotation * Vec3::new(0.0, 0.0, WRIST_AT.z);
+    let facing = (head - along).normalize_or(Vec3::Y);
+    let centre = along + facing * WRIST_AT.x;
+    // Reading toward the hand, upright to the eyes.
+    let toward_hand = rotation * Vec3::NEG_Z;
+    let x = (toward_hand - facing * toward_hand.dot(facing)).normalize_or(Vec3::X);
+    let y = facing.cross(x);
+    let turn = Quat::from_mat3(&glam::Mat3::from_cols(x, y, facing));
+    (pose(turn, centre), size)
 }
 
 /// The controllers in the world at the last frame, by `Hand`, for the game to put the
@@ -1016,6 +1046,7 @@ fn pose(rotation: Quat, position: Vec3) -> xr::Posef {
 /// its panel.
 pub fn end_frame(queue: &wgpu::Queue) {
     let mut guard = xr_state();
+    let sharpen = guard.as_ref().is_some_and(|x| x.sharpen);
     let Some(s) = guard.as_mut().and_then(|x| x.session.as_mut()) else {
         return;
     };
@@ -1055,6 +1086,21 @@ pub fn end_frame(queue: &wgpu::Queue) {
         let layer = xr::CompositionLayerProjection::new()
             .space(&s.local)
             .views(&projection_views);
+        // The compositor's sharpening on the eyes' layer, chained to it.
+        let settings = xr::sys::CompositionLayerSettingsFB {
+            ty: xr::sys::CompositionLayerSettingsFB::TYPE,
+            next: std::ptr::null(),
+            layer_flags: xr::sys::CompositionLayerSettingsFlagsFB::QUALITY_SHARPENING,
+        };
+        let mut raw = *layer.as_raw();
+        if sharpen {
+            raw.next = (&settings as *const xr::sys::CompositionLayerSettingsFB).cast();
+        }
+        // Safety: `CompositionLayerBase` is the header every layer struct starts with
+        // (the crate's own `Deref` makes the same cast); `raw` and `settings` outlive the
+        // `end` calls below.
+        let layer: &xr::CompositionLayerBase<'_, xr::Vulkan> =
+            unsafe { &*(&raw as *const xr::sys::CompositionLayerProjection).cast() };
         let (space, at, width) = match s.panel_drawn {
             Some(Panel::Room) => (
                 &s.local,
@@ -1116,7 +1162,7 @@ pub fn end_frame(queue: &wgpu::Queue) {
             .then_some(s.hotbar.zip(forearm(&s.hands)))
             .flatten();
         if let Some((hotbar, left)) = wrist {
-            let (at, size) = wrist_quad(left, hotbar);
+            let (at, size) = wrist_quad(left, hotbar, s.head.map_or(Vec3::ZERO, |(_, p)| p));
             let [x, y, w, h] = hotbar.crop.map(|v| v.round() as i32);
             let crop = xr::Rect2Di {
                 offset: xr::Offset2Di { x, y },
@@ -1158,25 +1204,25 @@ pub fn end_frame(queue: &wgpu::Queue) {
             s.stream.end(
                 state.predicted_display_time,
                 xr::EnvironmentBlendMode::OPAQUE,
-                &[&layer, &head, &wrist],
+                &[layer, &head, &wrist],
             )
         } else if s.panel_drawn.is_some() && dot_at.is_some() {
             s.stream.end(
                 state.predicted_display_time,
                 xr::EnvironmentBlendMode::OPAQUE,
-                &[&layer, &panel, &dot],
+                &[layer, &panel, &dot],
             )
         } else if s.panel_drawn.is_some() {
             s.stream.end(
                 state.predicted_display_time,
                 xr::EnvironmentBlendMode::OPAQUE,
-                &[&layer, &panel],
+                &[layer, &panel],
             )
         } else {
             s.stream.end(
                 state.predicted_display_time,
                 xr::EnvironmentBlendMode::OPAQUE,
-                &[&layer],
+                &[layer],
             )
         }
     } else {
