@@ -343,6 +343,9 @@ public class SetupActivity extends Activity
         if (s.equals("extract")) return Ui.t("Распаковка", "Unpacking");
         if (s.equals("assets")) return Ui.t("Звуки, шрифты и языки", "Sounds, fonts and languages");
         if (s.equals("derived")) return Ui.t("Данные Horizon", "Horizon data");
+        if (s.equals("java")) return Ui.t("Java", "Setting up Java");
+        if (s.equals("libraries")) return Ui.t("Библиотеки игры", "Game libraries");
+        if (s.equals("prepare")) return Ui.t("Данные Horizon (несколько минут)", "Making the Horizon data (a few minutes)");
         if (s.equals("done")) return Ui.t("Готово", "Ready");
         return Ui.t("Подготовка", "Preparing");
     }

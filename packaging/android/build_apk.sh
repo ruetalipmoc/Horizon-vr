@@ -38,6 +38,16 @@ with zipfile.ZipFile(f"{out}/unaligned.apk", "a", zipfile.ZIP_DEFLATED) as z:
         path = f"{out}/stage/lib/arm64-v8a/{extra}"
         if os.path.exists(path):
             z.write(path, f"lib/arm64-v8a/{extra}")
+    # On-device preparation (android_setup.rs): HORIZON_APK_ASSETS holds horizon-jre/ (a Java
+    # runtime for Android) and horizon-prepare/ (research-lock.json, the exporters' sources
+    # and classes), shipped as assets/ for the first start to unpack.
+    assets = os.environ.get("HORIZON_APK_ASSETS", "")
+    if assets:
+        for top in ("horizon-jre", "horizon-prepare"):
+            for d, _, files in os.walk(os.path.join(assets, top)):
+                for f in sorted(files):
+                    path = os.path.join(d, f)
+                    z.write(path, "assets/" + os.path.relpath(path, assets).replace(os.sep, "/"))
 PY
 "$BT/zipalign" -f -p 4 "$OUT/unaligned.apk" "$OUT/aligned.apk"
 if [ -n "${HORIZON_KEYSTORE:-}" ] && [ -f "$HORIZON_KEYSTORE" ]; then

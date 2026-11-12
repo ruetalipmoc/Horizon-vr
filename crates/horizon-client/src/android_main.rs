@@ -58,6 +58,13 @@ fn android_main(app: AndroidApp) {
         log::info!("Horizon: settings from the development server: {remote_env:?}");
     }
     log::info!("Horizon {} (Android) home {}", crash::version(), home.display());
+    // Development: the derived pack made on the device beside the installed one (vr-env.txt).
+    if std::env::var("HORIZON_DERIVE_TEST").as_deref() == Ok("1") {
+        let home = home.clone();
+        let _ = std::thread::Builder::new()
+            .name("Derive test".into())
+            .spawn(move || crate::android_setup::derive_test(&home));
+    }
     crash::install(home.clone(), "client");
     if let Some(internal) = app.internal_data_path() {
         apply_vulkan_driver(&internal);

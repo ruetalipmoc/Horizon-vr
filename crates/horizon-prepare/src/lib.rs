@@ -26,6 +26,7 @@ mod worker;
 
 pub use check::{check, missing_extras, STAMP};
 pub use files::clone_or_copy;
+pub mod derived_pack;
 pub use sounds::{add_assets, fonts, languages, packs, panorama, sounds, BUILT_IN_PACKS};
 
 use pyjson::Value;

@@ -30,6 +30,9 @@ const JVM_OPTION_VARS: [&str; 3] = ["JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_J
 /// Exporters and JDK probes write to pipes or log files: on Windows they open no terminal. They
 /// run with [`BATCH_OPTIONS`] alone, whatever options the player's environment sets for Java.
 pub(crate) fn command(program: impl AsRef<OsStr>) -> Command {
+    #[cfg(target_os = "android")]
+    let mut command = android_command(program.as_ref());
+    #[cfg(not(target_os = "android"))]
     let mut command = Command::new(program);
     for var in JVM_OPTION_VARS {
         command.env_remove(var);
@@ -42,6 +45,31 @@ pub(crate) fn command(program: impl AsRef<OsStr>) -> Command {
         command.creation_flags(CREATE_NO_WINDOW);
         command
     };
+    command
+}
+
+/// Android (Horizon VR's first start): an app may not execute files from its own folders,
+/// so a runtime unpacked there runs through the system's dynamic linker, which maps it like a
+/// library. Its libraries (`libjli.so`, `libc++_shared.so`) come from the runtime's `lib`;
+/// `lib/server`, where `libjvm.so` is, stays out of the path, or the launcher starts itself
+/// again (`RequiresSetenv`). Android has no `/tmp`: the JVM's temporary files go beside it.
+#[cfg(target_os = "android")]
+fn android_command(program: &OsStr) -> Command {
+    let path = Path::new(program);
+    let home = path.parent().and_then(Path::parent).filter(|_| path.is_absolute() && path.is_file());
+    let Some(home) = home else {
+        return Command::new(program);
+    };
+    let mut command = Command::new("/system/bin/linker64");
+    command.arg(path).env("LD_LIBRARY_PATH", home.join("lib"));
+    if path.file_name().is_some_and(|n| n == "java") {
+        let tmp = home.join("tmp");
+        let _ = fs::create_dir_all(&tmp);
+        command
+            .arg(format!("-Djava.io.tmpdir={}", tmp.display()))
+            .arg(format!("-Duser.home={}", home.display()))
+            .env("HOME", home);
+    }
     command
 }
 

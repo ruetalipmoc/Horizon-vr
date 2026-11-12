@@ -200,7 +200,7 @@ fn wanted_asset(name: &str) -> bool {
         || name.starts_with("minecraft/textures/gui/title/background/panorama_")
 }
 
-fn version_json(agent: &ureq::Agent, lock: &Value) -> Result<Value, String> {
+fn version_json(agent: &ureq::Agent, lock: &Value) -> Result<(Value, Vec<u8>), String> {
     let version = lock["minecraft"]["version"].as_str().ok_or("lock: no version")?;
     let mut accepted: Vec<String> = vec![lock["minecraft"]["manifest_sha1"].as_str().unwrap_or("").into()];
     if let Some(list) = lock["minecraft"]["accepted_manifest_sha1"].as_array() {
@@ -212,7 +212,7 @@ fn version_json(agent: &ureq::Agent, lock: &Value) -> Result<Value, String> {
         let url = format!("https://piston-meta.mojang.com/v1/packages/{sha}/{version}.json");
         if let Ok(data) = get_bytes(agent, &url) {
             if hex(&Sha1::digest(&data)) == *sha {
-                return serde_json::from_slice(&data).map_err(|e| e.to_string());
+                return Ok((serde_json::from_slice(&data).map_err(|e| e.to_string())?, data));
             }
         }
     }
@@ -226,7 +226,7 @@ fn version_json(agent: &ureq::Agent, lock: &Value) -> Result<Value, String> {
     if Some(hex(&Sha1::digest(&data)).as_str()) != entry["sha1"].as_str() {
         return Err(format!("{url}: SHA-1 mismatch"));
     }
-    serde_json::from_slice(&data).map_err(|e| e.to_string())
+    Ok((serde_json::from_slice(&data).map_err(|e| e.to_string())?, data))
 }
 
 fn run(home: &Path, derived: &str) -> Result<(), String> {
@@ -242,7 +242,7 @@ fn run(home: &Path, derived: &str) -> Result<(), String> {
 
     stage("version");
     counters(1, 0);
-    let version = version_json(&agent, &lock)?;
+    let (version, version_bytes) = version_json(&agent, &lock)?;
     let client = &version["downloads"]["client"];
     let client_sha1 = lock["minecraft"]["client_sha1"].as_str().ok_or("lock: no client_sha1")?;
     if client["sha1"].as_str() != Some(client_sha1) {
@@ -358,8 +358,13 @@ fn run(home: &Path, derived: &str) -> Result<(), String> {
     } else {
         let url = derived.trim();
         if url.is_empty() {
-            return Err("No derived pack: put horizon-derived.zip in the app folder".into());
-        }
+            // Horizon VR ships a Java runtime: the headset makes the pack itself.
+            if apk_path().is_some_and(|apk| has_asset(&apk, JRE_ASSETS)) {
+                derive_on_device(home, &work, &agent, &lock, &version, &version_bytes, &jar)?
+            } else {
+                return Err("No derived pack: put horizon-derived.zip in the app folder".into());
+            }
+        } else {
         let target = work.join("derived.zip");
         if !target.is_file() {
             let size = agent.head(url).call().ok().and_then(|r| r.header("Content-Length")?.parse().ok());
@@ -367,6 +372,7 @@ fn run(home: &Path, derived: &str) -> Result<(), String> {
             download(&agent, url, &target, None)?;
         }
         target
+        }
     };
     let file = fs::File::open(&pack).map_err(|e| {
         if e.kind() == std::io::ErrorKind::PermissionDenied {
@@ -432,6 +438,181 @@ fn run(home: &Path, derived: &str) -> Result<(), String> {
     let _ = fs::remove_dir_all(&work);
     stage("done");
     Ok(())
+}
+
+/// Where the APK ships the Java runtime and the preparer's root (packaging/android/build_apk.sh).
+const JRE_ASSETS: &str = "assets/horizon-jre/";
+const PREPARE_ASSETS: &str = "assets/horizon-prepare/";
+
+/// This app's APK: the runtime keeps it mapped (its dex and resources).
+fn apk_path() -> Option<PathBuf> {
+    let maps = fs::read_to_string("/proc/self/maps").ok()?;
+    maps.lines()
+        .filter_map(|line| line.split_whitespace().nth(5))
+        .find(|path| path.ends_with("/base.apk"))
+        .map(PathBuf::from)
+}
+
+fn has_asset(apk: &Path, prefix: &str) -> bool {
+    fs::File::open(apk)
+        .ok()
+        .and_then(|f| zip::ZipArchive::new(f).ok())
+        .is_some_and(|zip| zip.file_names().any(|n| n.starts_with(prefix)))
+}
+
+/// Unpacks the APK's entries under `prefix` into `target`, once per APK (a new install unpacks
+/// again: the marker holds the APK's size and time).
+fn unpack_assets(apk: &Path, prefix: &str, target: &Path) -> Result<(), String> {
+    let meta = fs::metadata(apk).map_err(|e| format!("{}: {e}", apk.display()))?;
+    let stamp = format!("{} {:?}", meta.len(), meta.modified().ok());
+    let marker = target.join(".unpacked");
+    if fs::read_to_string(&marker).is_ok_and(|s| s == stamp) {
+        return Ok(());
+    }
+    let _ = fs::remove_dir_all(target);
+    fs::create_dir_all(target).map_err(|e| e.to_string())?;
+    let mut zip = zip::ZipArchive::new(fs::File::open(apk).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    let names: Vec<String> = zip.file_names().filter(|n| n.starts_with(prefix)).map(String::from).collect();
+    counters(names.len(), 0);
+    for (i, name) in names.iter().enumerate() {
+        let relative = &name[prefix.len()..];
+        if relative.is_empty() || relative.contains("..") {
+            continue;
+        }
+        let out = target.join(relative);
+        if let Some(parent) = out.parent() {
+            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        let mut entry = zip.by_name(name).map_err(|e| e.to_string())?;
+        let mut file = fs::File::create(&out).map_err(|e| format!("{}: {e}", out.display()))?;
+        std::io::copy(&mut entry, &mut file).map_err(|e| e.to_string())?;
+        FILES_DONE.store(i + 1, Ordering::Relaxed);
+    }
+    fs::write(&marker, stamp).map_err(|e| e.to_string())
+}
+
+/// Horizon VR: the derived pack made on the headset, as the PC tools make it. The APK's Java
+/// runtime runs Horizon's exporters on Mojang's own client and server jars and libraries,
+/// downloaded from Mojang like the rest; the prepared folder is then zipped as
+/// `make_derived_pack.sh` would, for the step that unpacks it. Returns the zip.
+fn derive_on_device(
+    home: &Path,
+    work: &Path,
+    agent: &ureq::Agent,
+    lock: &Value,
+    version: &Value,
+    version_bytes: &[u8],
+    client_jar: &Path,
+) -> Result<PathBuf, String> {
+    stage("java");
+    let apk = apk_path().ok_or("cannot find this app's APK")?;
+    let java_home = home.join("java");
+    let root = home.join("prepare");
+    unpack_assets(&apk, JRE_ASSETS, &java_home)?;
+    unpack_assets(&apk, PREPARE_ASSETS, &root)?;
+
+    stage("libraries");
+    let version_path = work.join("version.json");
+    fs::write(&version_path, version_bytes).map_err(|e| e.to_string())?;
+    let libraries = work.join("libraries");
+    let mut wanted: Vec<(PathBuf, String, String, u64)> = Vec::new();
+    for library in version["libraries"].as_array().into_iter().flatten() {
+        let artifact = &library["downloads"]["artifact"];
+        let (Some(path), Some(url), Some(sha1)) =
+            (artifact["path"].as_str(), artifact["url"].as_str(), artifact["sha1"].as_str())
+        else {
+            continue;
+        };
+        if path.contains("..") || wanted.iter().any(|w| w.0 == libraries.join(path)) {
+            continue;
+        }
+        wanted.push((libraries.join(path), url.into(), sha1.into(), artifact["size"].as_u64().unwrap_or(0)));
+    }
+    let server_sha1 = lock["minecraft"]["server_sha1"].as_str().ok_or("lock: no server_sha1")?;
+    let server = work.join("server.jar");
+    wanted.push((
+        server.clone(),
+        format!("https://piston-data.mojang.com/v1/objects/{server_sha1}/server.jar"),
+        server_sha1.into(),
+        0,
+    ));
+    counters(wanted.len(), wanted.iter().map(|w| w.3).sum());
+    for (target, url, sha1, size) in &wanted {
+        if sha1_file(target).as_deref() != Some(sha1.as_str()) {
+            download(agent, url, target, Some(sha1))?;
+        } else {
+            BYTES_DONE.fetch_add(*size, Ordering::Relaxed);
+        }
+        FILES_DONE.fetch_add(1, Ordering::Relaxed);
+    }
+
+    stage("prepare");
+    counters(100, 0);
+    let options = horizon_prepare::Options {
+        root: root.clone(),
+        import: true,
+        minecraft_dir: None,
+        server_jar: Some(server),
+        java_home: Some(java_home),
+        inputs: horizon_prepare::artifacts::Inputs {
+            version_json: Some(version_path),
+            client_jar: Some(client_jar.to_path_buf()),
+            libraries_dir: Some(libraries),
+            assets_dir: None,
+        },
+        output: Some(work.join("prepared")),
+    };
+    let log = |line: &str| log::info!("Horizon setup: prepare: {line}");
+    let progress = |fraction: f32| FILES_DONE.store((fraction.clamp(0.0, 1.0) * 100.0) as usize, Ordering::Relaxed);
+    let prepared = horizon_prepare::prepare_with_progress(&options, &log, &progress)?;
+    let zip = work.join("derived.zip");
+    horizon_prepare::derived_pack::zip_derived(&prepared, &zip)?;
+    let _ = fs::remove_dir_all(work.join("prepared"));
+    log::info!("Horizon setup: made the derived pack on the device");
+    Ok(zip)
+}
+
+/// Development (`HORIZON_DERIVE_TEST=1` from vr-env.txt): makes the derived pack on the device
+/// in a scratch folder, beside a finished setup, and logs how it compares, without touching the
+/// game's files.
+pub fn derive_test(home: &Path) {
+    let run = || -> Result<String, String> {
+        let lock: Value = serde_json::from_str(LOCK).map_err(|e| e.to_string())?;
+        let work = home.join("derive-test");
+        fs::create_dir_all(&work).map_err(|e| e.to_string())?;
+        let agent = agent();
+        let (version, bytes) = version_json(&agent, &lock)?;
+        let client = &version["downloads"]["client"];
+        let jar = work.join("client.jar");
+        let sha1 = client["sha1"].as_str().ok_or("no client sha1")?;
+        if sha1_file(&jar).as_deref() != Some(sha1) {
+            download(&agent, client["url"].as_str().ok_or("no client url")?, &jar, Some(sha1))?;
+        }
+        let started = std::time::Instant::now();
+        let zip = derive_on_device(home, &work, &agent, &lock, &version, &bytes, &jar)?;
+        let resources = home.join("resources");
+        let mut archive = zip::ZipArchive::new(fs::File::open(&zip).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+        let mut differ = Vec::new();
+        for i in 0..archive.len() {
+            let entry = archive.by_index(i).map_err(|e| e.to_string())?;
+            let size = fs::metadata(resources.join(entry.name())).map(|m| m.len()).ok();
+            if size != Some(entry.size()) {
+                differ.push(format!("{} ({:?} vs {})", entry.name(), size, entry.size()));
+            }
+        }
+        Ok(format!(
+            "{} files in {:.0} s; differ from the installed pack: {}",
+            archive.len(),
+            started.elapsed().as_secs_f32(),
+            if differ.is_empty() { "none".into() } else { differ.join(", ") }
+        ))
+    };
+    match run() {
+        Ok(report) => log::info!("Horizon derive test: OK, {report}"),
+        Err(e) => log::warn!("Horizon derive test: failed: {e}"),
+    }
 }
 
 fn jstring(env: &mut jni::JNIEnv, s: &jni::objects::JString) -> String {
