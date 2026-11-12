@@ -49,6 +49,11 @@ const WRIST_AT: Vec3 = Vec3::new(0.064, 0.0, 0.13);
 /// How near (metres) the right controller's tip must come to the wrist's hotbar to pick
 /// a slot.
 const WRIST_TOUCH: f32 = 0.1;
+/// In play, the HUD above the wrist's hotbar (debug screen, chat): metres away, wide, and
+/// lowered from the eyes' level.
+const HEAD_TOP_DISTANCE: f32 = 1.8;
+const HEAD_TOP_WIDTH: f32 = 1.6;
+const HEAD_TOP_DROP: f32 = 0.3;
 /// The aim's crosshair image, pixels a side.
 const CROSS_PIXELS: u32 = 32;
 
@@ -248,9 +253,11 @@ struct Session {
     /// in LOCAL space (where its dot goes).
     wrist_slot: Option<usize>,
     wrist_point: Option<Vec3>,
-    /// Where the right controller aims in the world (camera-relative) and the face's
-    /// normal there, if it is a block (`set_aim_point`).
-    aim_point: Option<(Vec3, Option<Vec3>)>,
+    /// Where each controller aims in the world (camera-relative) and the face's normal
+    /// there, if it is a block, left then right (`set_aim_points`).
+    aim_points: [Option<(Vec3, Option<Vec3>)>; 2],
+    /// The player looks along the left controller (its trigger uses), not the right.
+    look_left: bool,
     /// The player's yaw to add to the left stick so it walks where the head faces.
     move_turn: f32,
     /// The body's turn and the head's lean at the last frame, to put world points back
@@ -741,7 +748,8 @@ fn start_session(xr: &Xr, device: &wgpu::Device, raw_device: vk::Device) -> Resu
         hotbar: None,
         wrist_slot: None,
         wrist_point: None,
-        aim_point: None,
+        aim_points: [None; 2],
+        look_left: false,
         move_turn: 0.0,
         last_lean: Vec3::ZERO,
         anchor: None,
@@ -928,7 +936,8 @@ pub fn begin_frame() -> Option<FrameViews> {
     s.wrist_point = hover.map(|(_, at)| at);
     // The left stick walks where the head faces, not where the right hand aims (the
     // player's yaw follows the aim, for picking blocks).
-    s.move_turn = match s.hands[Hand::RightAim as usize] {
+    let look_hand = if s.look_left { Hand::LeftAim } else { Hand::RightAim };
+    s.move_turn = match s.hands[look_hand as usize] {
         Some((aim, _)) => wrap_degrees(
             yaw_pitch(body * head_rotation).0 - yaw_pitch(body * aim).0,
         ),
@@ -1020,12 +1029,30 @@ pub fn move_turn() -> f32 {
         .map_or(0.0, |s| s.move_turn)
 }
 
-/// Where the right controller aims in the world, camera-relative (the block or mob it
-/// picks), for the aim's dot; `None` when it aims at nothing.
-pub fn set_aim_point(at: Option<(Vec3, Option<Vec3>)>) {
+/// Where each controller aims in the world, camera-relative (the block or mob it picks),
+/// and the block face's normal there, left then right, for their crosshairs.
+pub fn set_aim_points(at: [Option<(Vec3, Option<Vec3>)>; 2]) {
     if let Some(s) = xr_state().as_mut().and_then(|x| x.session.as_mut()) {
-        s.aim_point = at;
+        s.aim_points = at;
     }
+}
+
+/// The player looks along the left controller (`true`, while its trigger uses) or the
+/// right one (`look`).
+pub fn set_look_hand(left: bool) {
+    if let Some(s) = xr_state().as_mut().and_then(|x| x.session.as_mut()) {
+        s.look_left = left;
+    }
+}
+
+/// The yaw and pitch a controller points along in the world (Minecraft degrees), for
+/// picking along the hand the player does not look with.
+pub fn hand_angles(left: bool) -> Option<(f32, f32)> {
+    let guard = xr_state();
+    let s = guard.as_ref()?.session.as_ref()?;
+    let aim = if left { Hand::LeftAim } else { Hand::RightAim };
+    let (rotation, _) = s.hands[aim as usize]?;
+    Some(yaw_pitch(body_rotation(s.body_yaw) * rotation))
 }
 
 /// The right controller's grip is squeezed (a shift-click while pointing at a menu).
@@ -1230,7 +1257,7 @@ pub fn end_frame(queue: &wgpu::Queue) {
         let mut spots: [Option<(xr::Posef, f32)>; 2] = [None; 2];
         let mut colours = [wgpu::Color::WHITE; 2];
         let yellow = wgpu::Color { r: 1.0, g: 0.85, b: 0.2, a: 1.0 };
-        let mut cross_at = None;
+        let mut cross_at: [Option<(xr::Posef, f32)>; 2] = [None; 2];
         if let Some(panel) = s.menu_pose {
             let rotation = quat(panel.orientation);
             for i in 0..2 {
@@ -1251,27 +1278,35 @@ pub fn end_frame(queue: &wgpu::Queue) {
                 colours[1] = yellow;
             }
             spots[1] = Some((pose(facing(back, at), at), 0.01));
-        } else if let Some((offset, normal)) = s.aim_point {
-            let body = body_rotation(s.body_yaw).inverse();
-            let at = body * offset + head_at - s.last_lean;
-            let distance = (head_at - at).length();
-            let back = (head_at - at).normalize_or(Vec3::Z);
-            let normal = normal.map(|n| (body * n).normalize_or(back)).filter(|n| n.dot(back) > 0.0);
-            let normal = normal.unwrap_or(back);
-            cross_at = Some((
-                pose(facing(normal, at), at + normal * 0.01),
-                (0.022 * distance).clamp(0.02, 0.3),
-            ));
+        }
+        if s.menu_pose.is_none() {
+            for i in 0..2 {
+                // The right hand's crosshair gives way to its dot over the wrist.
+                if i == 1 && s.wrist_point.is_some() {
+                    continue;
+                }
+                let Some((offset, normal)) = s.aim_points[i] else { continue };
+                let body = body_rotation(s.body_yaw).inverse();
+                let at = body * offset + head_at - s.last_lean;
+                let distance = (head_at - at).length();
+                let back = (head_at - at).normalize_or(Vec3::Z);
+                let normal = normal.map(|n| (body * n).normalize_or(back)).filter(|n| n.dot(back) > 0.0);
+                let normal = normal.unwrap_or(back);
+                cross_at[i] = Some((
+                    pose(facing(normal, at), at + normal * 0.01),
+                    (0.022 * distance).clamp(0.02, 0.3),
+                ));
+            }
         }
         for i in 0..2 {
             if spots[i].is_some() && s.dots[i].fill(&s.device, queue, colours[i]).is_err() {
                 spots[i] = None;
             }
         }
-        if cross_at.is_some() && !s.cross_ready {
+        if cross_at.iter().any(Option::is_some) && !s.cross_ready {
             s.cross_ready = draw_cross(&s.device, queue, &s.blit_alpha, &mut s.cross);
         }
-        let cross_at = cross_at.filter(|_| s.cross_ready);
+        let cross_at = cross_at.map(|c| c.filter(|_| s.cross_ready));
         let dot_rect = xr::Rect2Di {
             offset: xr::Offset2Di { x: 0, y: 0 },
             extent: xr::Extent2Di { width: 16, height: 16 },
@@ -1295,7 +1330,7 @@ pub fn end_frame(queue: &wgpu::Queue) {
             offset: xr::Offset2Di { x: 0, y: 0 },
             extent: xr::Extent2Di { width: CROSS_PIXELS as i32, height: CROSS_PIXELS as i32 },
         };
-        let cross = cross_at.map(|(at, size)| {
+        let crosses = cross_at.map(|c| c.map(|(at, size)| {
             xr::CompositionLayerQuad::new()
                 .space(&s.local)
                 .layer_flags(xr::CompositionLayerFlags::BLEND_TEXTURE_SOURCE_ALPHA)
@@ -1308,7 +1343,7 @@ pub fn end_frame(queue: &wgpu::Queue) {
                 )
                 .pose(at)
                 .size(xr::Extent2Df { width: size, height: size })
-        });
+        }));
         // In play the hotbar goes to the left wrist and the head's panel keeps the rest.
         let wrist = (s.panel_drawn == Some(Panel::Head))
             .then_some(s.hotbar.zip(forearm(&s.hands)))
@@ -1336,7 +1371,7 @@ pub fn end_frame(queue: &wgpu::Queue) {
                 offset: xr::Offset2Di { x: 0, y: 0 },
                 extent: xr::Extent2Di { width: s.size[0] as i32, height: y.max(1) },
             };
-            let head_height = HUD_WIDTH * y.max(1) as f32 / s.size[0] as f32;
+            let head_height = HEAD_TOP_WIDTH * y.max(1) as f32 / s.size[0] as f32;
             let head = xr::CompositionLayerQuad::new()
                 .space(&s.view)
                 .layer_flags(xr::CompositionLayerFlags::BLEND_TEXTURE_SOURCE_ALPHA)
@@ -1347,12 +1382,17 @@ pub fn end_frame(queue: &wgpu::Queue) {
                         .image_array_index(0)
                         .image_rect(top),
                 )
-                // The full panel's top part, where it was.
+                // The full panel's top part (the debug screen, chat, titles): farther and
+                // lower than the panel was, so its top lines are not up at the brow.
                 .pose(pose(
                     Quat::IDENTITY,
-                    Vec3::new(0.0, (HUD_WIDTH * aspect - head_height) / 2.0, -HUD_DISTANCE),
+                    Vec3::new(
+                        0.0,
+                        (HEAD_TOP_WIDTH * aspect - head_height) / 2.0 - HEAD_TOP_DROP,
+                        -HEAD_TOP_DISTANCE,
+                    ),
                 ))
-                .size(xr::Extent2Df { width: HUD_WIDTH, height: head_height });
+                .size(xr::Extent2Df { width: HEAD_TOP_WIDTH, height: head_height });
             (head, wrist)
         });
         let mut layers: Vec<&xr::CompositionLayerBase<'_, xr::Vulkan>> = vec![layer];
@@ -1362,7 +1402,7 @@ pub fn end_frame(queue: &wgpu::Queue) {
         } else if s.panel_drawn.is_some() {
             layers.push(&panel);
         }
-        if let Some(cross) = &cross {
+        for cross in crosses.iter().flatten() {
             layers.push(cross);
         }
         for dot in dot_layers.iter().flatten() {
@@ -1436,7 +1476,8 @@ pub fn look(yaw: f32) -> Option<(f32, f32)> {
     let s = guard.as_mut()?.session.as_mut()?;
     // The player looks where the right controller points (blocks are aimed at with it),
     // where the head does while it is not tracked.
-    let head = s.hands[Hand::RightAim as usize].map_or(s.head?.0, |(rotation, _)| rotation);
+    let aim = if s.look_left { Hand::LeftAim } else { Hand::RightAim };
+    let head = s.hands[aim as usize].map_or(s.head?.0, |(rotation, _)| rotation);
     if s.menu_open {
         // The menu stays where it is; the player turns to the head once it closes.
         return None;

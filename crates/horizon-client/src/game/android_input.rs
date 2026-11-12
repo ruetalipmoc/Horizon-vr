@@ -577,8 +577,18 @@ impl super::Game<'_> {
         if pressed && let Some(slot) = horizon_xr::wrist_slot() {
             self.hotbar_presses.push(slot);
         }
-        // The aim's crosshair: on the nearer of the block (lying on its face) and the mob
-        // the right hand picks.
+        // The left trigger uses along the left controller: while it is (even lightly) held,
+        // the player looks where the left hand points, so the use lands there, and the
+        // right hand stays free to attack.
+        static LEFT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        let left_trigger = horizon_xr::pad().map_or(0.0, |p| p.triggers[0]);
+        let playing = self.screen == super::Screen::Playing && self.title.is_none();
+        let was_left = LEFT.load(std::sync::atomic::Ordering::Relaxed);
+        let look_left = playing && if was_left { left_trigger > 0.08 } else { left_trigger > 0.15 };
+        LEFT.store(look_left, std::sync::atomic::Ordering::Relaxed);
+        horizon_xr::set_look_hand(look_left);
+        // The crosshairs: the looking hand's on the nearer of the block (lying on its face)
+        // and the mob the player picks; the other hand's on the block along it.
         let aim = self.eye_position().and_then(|eye| {
             let hit = self.pick();
             let face = hit.map(|hit| glam::Vec3::new(hit.face[0] as f32, hit.face[1] as f32, hit.face[2] as f32));
@@ -599,7 +609,18 @@ impl super::Game<'_> {
                 normal,
             ))
         });
-        horizon_xr::set_aim_point(aim.filter(|_| self.screen == super::Screen::Playing));
+        let other = self.eye_position().zip(horizon_xr::hand_angles(!look_left)).and_then(|(eye, (yaw, pitch))| {
+            let dir = super::pick_view_vector(yaw, pitch);
+            let hit = self.clip_ray(eye, dir, self.block_reach)?;
+            let at = hit.point;
+            Some((
+                glam::Vec3::new((at[0] - eye[0]) as f32, (at[1] - eye[1]) as f32, (at[2] - eye[2]) as f32),
+                Some(glam::Vec3::new(hit.face[0] as f32, hit.face[1] as f32, hit.face[2] as f32)),
+            ))
+        });
+        let aim = aim.filter(|_| playing);
+        let other = other.filter(|_| playing);
+        horizon_xr::set_aim_points(if look_left { [aim, other] } else { [other, aim] });
         let Some((yaw, pitch)) = horizon_xr::look(self.yaw) else {
             return;
         };
