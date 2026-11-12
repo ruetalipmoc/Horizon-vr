@@ -16,6 +16,7 @@
 #![cfg(target_os = "android")]
 
 mod blit;
+mod warp;
 
 use ash::vk::{self, Handle};
 use glam::{Quat, Vec3};
@@ -133,6 +134,9 @@ pub struct FrameViews {
     pub size: [u32; 2],
     /// The controllers that are tracked, by `Hand`.
     pub hands: [Option<HandPose>; 4],
+    /// AppSW: each eye as it would have been at the last frame for the same head pose
+    /// (the body's turn then), for the motion vectors; `None` without space warp.
+    pub warp_eyes: Option<[Eye; 2]>,
 }
 
 /// The activity the OpenXR loader and runtime attach to, set once by `android_main`.
@@ -193,6 +197,8 @@ struct Xr {
     session: Option<Session>,
     /// The compositor sharpens the eyes' layer (`XR_FB_composition_layer_settings`).
     sharpen: bool,
+    /// Application SpaceWarp is on (`XR_FB_space_warp`, `HORIZON_XR_SPACEWARP=0` off).
+    space_warp: bool,
 }
 
 struct Session {
@@ -269,6 +275,9 @@ struct Session {
     body_yaw: f32,
     /// The yaw `look` last gave the player; `None` until the first look.
     last_yaw: Option<f32>,
+    /// AppSW's images and pass (`warp`), and the body's turn at the last frame.
+    warp: Option<warp::SpaceWarp>,
+    warp_body_yaw: Option<f32>,
     stats: Stats,
 }
 
@@ -444,6 +453,9 @@ fn open_instance(ctx: &Context) -> Result<(wgpu::Instance, wgpu::Adapter), Strin
     wanted.fb_composition_layer_settings = available.fb_composition_layer_settings;
     // The headset's CPU and GPU clocks, held high (`set_performance_levels`).
     wanted.ext_performance_settings = available.ext_performance_settings;
+    // Application SpaceWarp: half the frames drawn, the rest made up by the headset.
+    wanted.fb_space_warp =
+        available.fb_space_warp && std::env::var("HORIZON_XR_SPACEWARP").as_deref() != Ok("0");
     let instance = entry
         .create_instance(
             &xr::ApplicationInfo {
@@ -556,6 +568,7 @@ fn open_instance(ctx: &Context) -> Result<(wgpu::Instance, wgpu::Adapter), Strin
         device_extensions,
         session: None,
         sharpen: available.fb_composition_layer_settings,
+        space_warp: wanted.fb_space_warp,
     });
     if let Some(marker) = marker() {
         let _ = std::fs::write(marker, b"1");
@@ -667,6 +680,30 @@ fn open_vulkan_device(
     Ok(unsafe { adapter.create_device_from_hal(open, desc) }.map(|(d, q)| (d, q, handle)))
 }
 
+/// The motion vector image size the runtime recommends (`XrSystemSpaceWarpPropertiesFB`).
+fn space_warp_size(xr: &Xr) -> Option<[u32; 2]> {
+    let mut warp = xr::sys::SystemSpaceWarpPropertiesFB {
+        ty: xr::sys::SystemSpaceWarpPropertiesFB::TYPE,
+        next: std::ptr::null_mut(),
+        recommended_motion_vector_image_rect_width: 0,
+        recommended_motion_vector_image_rect_height: 0,
+    };
+    // Safety: a zeroed SystemProperties is a valid out structure once typed; `warp` is
+    // chained to it and outlives the call.
+    let result = unsafe {
+        let mut props: xr::sys::SystemProperties = std::mem::zeroed();
+        props.ty = xr::sys::SystemProperties::TYPE;
+        props.next = (&mut warp as *mut xr::sys::SystemSpaceWarpPropertiesFB).cast();
+        (xr.instance.fp().get_system_properties)(xr.instance.as_raw(), xr.system, &mut props)
+    };
+    let size = [
+        warp.recommended_motion_vector_image_rect_width,
+        warp.recommended_motion_vector_image_rect_height,
+    ];
+    log::info!("Horizon VR: space warp recommends {size:?} ({result:?})");
+    (result == xr::sys::Result::SUCCESS && size[0] > 0 && size[1] > 0).then_some(size)
+}
+
 fn start_session(xr: &Xr, device: &wgpu::Device, raw_device: vk::Device) -> Result<Session, String> {
     // Safety: the handles are the ones OpenXR made; the queue is family 0, index 0.
     let (session, waiter, stream) = unsafe {
@@ -737,6 +774,12 @@ fn start_session(xr: &Xr, device: &wgpu::Device, raw_device: vk::Device) -> Resu
         blit::EyeChain::new(&session, device, format, [16, 16])?,
     ];
     let cross = blit::EyeChain::new(&session, device, format, [CROSS_PIXELS, CROSS_PIXELS])?;
+    let warp = xr.space_warp.then(|| {
+        let size = space_warp_size(xr).unwrap_or([size[0] / 4, size[1] / 4]);
+        warp::SpaceWarp::new(&session, device, size)
+            .map_err(|e| log::warn!("Horizon VR: no space warp: {e}"))
+            .ok()
+    });
     Ok(Session {
         session,
         waiter,
@@ -781,6 +824,8 @@ fn start_session(xr: &Xr, device: &wgpu::Device, raw_device: vk::Device) -> Resu
         anchor: None,
         body_yaw: 0.0,
         last_yaw: None,
+        warp: warp.flatten(),
+        warp_body_yaw: None,
         stats: Stats::default(),
     })
 }
@@ -887,6 +932,22 @@ pub fn begin_frame() -> Option<FrameViews> {
             ],
         }
     });
+    // AppSW: the eyes from the body's last turn, the head where it is now.
+    let warp_eyes = s.warp.as_ref().map(|_| {
+        let then = body_rotation(s.warp_body_yaw.unwrap_or(s.body_yaw));
+        [0, 1].map(|i| {
+            let v = &views[i];
+            Eye {
+                rotation: then * quat(v.pose.orientation),
+                offset: then * (vec3(v.pose.position) - head_position + lean),
+                fov: eyes[i].fov,
+            }
+        })
+    });
+    s.warp_body_yaw = Some(s.body_yaw);
+    if let Some(warp) = &mut s.warp {
+        warp.filled = [false; 2];
+    }
     let time = state.predicted_display_time;
     for (i, space) in s.hand_spaces.iter().enumerate() {
         s.hands[i] = space
@@ -976,6 +1037,7 @@ pub fn begin_frame() -> Option<FrameViews> {
         eyes,
         size: s.size,
         hands,
+        warp_eyes,
     })
 }
 
@@ -1068,6 +1130,33 @@ pub fn set_aim_points(at: [Option<(Vec3, Option<Vec3>)>; 2]) {
 pub fn set_look_hand(left: bool) {
     if let Some(s) = xr_state().as_mut().and_then(|x| x.session.as_mut()) {
         s.look_left = left;
+    }
+}
+
+/// AppSW: fills eye `eye`'s motion vectors and depth from the eye's depth image after
+/// the world (reversed Z) and `reproject` (current NDC to the previous frame's clip).
+/// `range`: the depth's distances in metres at 0 and at 1; `skip`: no extrapolation this
+/// frame (the view jumped).
+pub fn space_warp_fill(
+    eye: usize,
+    queue: &wgpu::Queue,
+    depth: &wgpu::TextureView,
+    reproject: glam::Mat4,
+    range: (f32, f32),
+    skip: bool,
+) {
+    let mut guard = xr_state();
+    let Some(s) = guard.as_mut().and_then(|x| x.session.as_mut()) else {
+        return;
+    };
+    let device = s.device.clone();
+    let Some(warp) = s.warp.as_mut() else {
+        return;
+    };
+    warp.range = range;
+    warp.skip = skip;
+    if let Err(e) = warp.fill(&device, queue, eye, depth, reproject) {
+        log::warn!("Horizon VR: space warp eye {eye}: {e}");
     }
 }
 
@@ -1241,6 +1330,20 @@ pub fn end_frame(queue: &wgpu::Queue) {
         let mut raw = *layer.as_raw();
         if sharpen {
             raw.next = (&settings as *const xr::sys::CompositionLayerSettingsFB).cast();
+        }
+        // AppSW: each view carries its motion vectors and depth, once both eyes have them.
+        let warp_infos = s
+            .warp
+            .as_ref()
+            .filter(|w| w.filled == [true; 2])
+            .map(|w| [w.info(0), w.info(1)]);
+        let mut raw_views = [0, 1].map(|i| *projection_views[i].as_raw());
+        if let Some(infos) = &warp_infos {
+            for i in 0..2 {
+                raw_views[i].next = (&infos[i] as *const xr::sys::CompositionLayerSpaceWarpInfoFB).cast();
+            }
+            raw.views = raw_views.as_ptr();
+            raw.view_count = 2;
         }
         // Safety: `CompositionLayerBase` is the header every layer struct starts with
         // (the crate's own `Deref` makes the same cast); `raw` and `settings` outlive the

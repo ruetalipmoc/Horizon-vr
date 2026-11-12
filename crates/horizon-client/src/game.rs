@@ -15118,9 +15118,12 @@ impl Game<'_> {
                     .is_some_and(|s| &*s.item == "minecraft:shield"),
                 Some(Hand::Main) => false,
             };
+        let vr_bow = vr_hand_frame(false).is_some()
+            && items[0].as_ref().is_some_and(|s| &*s.item == "minecraft:bow");
         for (i, (hand, item)) in Hand::BOTH.into_iter().zip(items).enumerate() {
             // VR: both arms show, each on its controller, whatever they hold.
-            let vr_left = self.settings.main_hand_left != (hand == Hand::Off);
+            // A bow goes to the left hand, the right one pulls its string.
+            let vr_left = (self.settings.main_hand_left != (hand == Hand::Off)) != vr_bow;
             let vr_frame = vr_hand_frame(vr_left);
             if !shown[i] && vr_frame.is_none() {
                 continue;

@@ -141,8 +141,11 @@ fn with_touch_controllers(mut pad: PadState, touch: horizon_xr::Pad) -> PadState
         let (x, z) = (x * cos - z * sin, x * sin + z * cos);
         horizon_xr::Pad { left: [-x, z], ..touch }
     };
-    // Over the wrist's hotbar, the right trigger picks a slot (`xr_look`), not the pad.
-    let touch = if horizon_xr::wrist_slot().is_some() {
+    // Over the wrist's hotbar, the right trigger picks a slot (`xr_look`), not the pad; with
+    // a bow it draws the string (`xr_bow`).
+    let touch = if horizon_xr::wrist_slot().is_some()
+        || BOW_HELD.load(std::sync::atomic::Ordering::Relaxed)
+    {
         horizon_xr::Pad { triggers: [touch.triggers[0], 0.0], ..touch }
     } else {
         touch
@@ -189,6 +192,9 @@ pub(super) fn take_used() -> (bool, bool) {
     s.mouse_used = false;
     used
 }
+
+/// VR: a bow is held, so the right trigger draws its string (`xr_bow`), never attacks.
+static BOW_HELD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// VR: food or a potion is held at the mouth (the use button held by the gesture).
 static EATING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -589,14 +595,67 @@ impl super::Game<'_> {
             }
         }
     }
+    /// VR: the bow with both hands. The bow shows in the left hand; the right trigger
+    /// squeezed with the right hand near it takes the string and holds use (drawing the
+    /// bow), and letting go shoots. The arrow flies from the right hand through the left,
+    /// so the player looks that way while drawing and a moment after. Returns where to look.
+    fn xr_bow(&mut self) -> Option<[f64; 3]> {
+        use std::time::{Duration, Instant};
+        // Drawing, the last aim, and until when the player keeps looking along it.
+        static BOW: Mutex<(bool, [f64; 3], Option<Instant>)> = Mutex::new((false, [0.0; 3], None));
+        static TRIGGER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        let now = Instant::now();
+        let playing = self.screen == super::Screen::Playing && self.title.is_none();
+        let held = playing && self.visible_hand_items()[0].as_ref().is_some_and(|s| &*s.item == "minecraft:bow");
+        BOW_HELD.store(held, std::sync::atomic::Ordering::Relaxed);
+        let trigger = horizon_xr::pad().is_some_and(|p| p.triggers[1] > 0.5);
+        let pressed = trigger && !TRIGGER.swap(trigger, std::sync::atomic::Ordering::Relaxed);
+        if !trigger {
+            TRIGGER.store(false, std::sync::atomic::Ordering::Relaxed);
+        }
+        let hands = horizon_xr::last_hands().and_then(|h| {
+            Some((h[horizon_xr::Hand::LeftGrip as usize]?.offset, h[horizon_xr::Hand::RightGrip as usize]?.offset))
+        });
+        let eye = self.eye_position()?;
+        let mut bow = BOW.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (left, right) = match hands {
+            Some(h) if held => h,
+            _ => {
+                if bow.0 {
+                    bow.0 = false;
+                    shared().mouse.push(MouseInput::Button(1, false));
+                }
+                return None;
+            }
+        };
+        let string = left - right;
+        if string.length() > 0.02 {
+            let d = string.normalize();
+            bow.1 = [f64::from(d.x), f64::from(d.y), f64::from(d.z)];
+        }
+        if !bow.0 && pressed && string.length() < 0.2 {
+            bow.0 = true;
+            shared().mouse.push(MouseInput::Button(1, true));
+        } else if bow.0 && !trigger {
+            bow.0 = false;
+            bow.2 = Some(now + Duration::from_millis(150));
+            shared().mouse.push(MouseInput::Button(1, false));
+        }
+        let aiming = bow.0 || bow.2.is_some_and(|t| now < t);
+        aiming.then(|| [0, 1, 2].map(|i| eye[i] + bow.1[i] * 10.0))
+    }
     pub(super) fn xr_look(&mut self) {
         horizon_xr::set_menu(self.title.is_some() || self.screen != super::Screen::Playing);
         self.xr_swim();
         // A swing at a mob first, else the hand's own actions (they track every frame).
+        let bow = self.xr_bow();
         let tip = self.xr_right_tip();
-        let swing = self.xr_swing(tip);
-        let hand = self.xr_hand_actions(tip);
-        if let Some(at) = swing.or(hand)
+        let (swing, hand) = if bow.is_some() || BOW_HELD.load(std::sync::atomic::Ordering::Relaxed) {
+            (None, None)
+        } else {
+            (self.xr_swing(tip), self.xr_hand_actions(tip))
+        };
+        if let Some(at) = bow.or(swing).or(hand)
             && let Some(eye) = self.eye_position()
         {
             // Look at the mob being hit until the swing's click lands.

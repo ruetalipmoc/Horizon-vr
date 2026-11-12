@@ -1073,6 +1073,8 @@ pub struct Renderer {
     /// VR: the lens of the eye being drawn (tangents left, right, up, down), for the
     /// title panorama.
     xr_eye_fov: Option<[f32; 4]>,
+    /// AppSW: the camera at the last VR frame, for the motion vectors.
+    xr_warp_camera: Option<DVec3>,
     /// VR: when the left eye was last saved for the developer (`render_xr`).
     xr_snapshot: Option<Instant>,
     /// VR: the eyes are drawn without the HUD, which goes to its own panel.
@@ -4756,6 +4758,7 @@ impl Renderer {
             offscreen,
             xr_view: None,
             xr_eye_fov: None,
+            xr_warp_camera: None,
             xr_snapshot: None,
             xr_hud_skip: false,
             xr_hud: None,
@@ -7518,7 +7521,27 @@ impl Renderer {
                 Some(target) => horizon_xr::submit_eye(i, &self.queue, target),
                 None => horizon_xr::note_draw("no offscreen target"),
             }
+            // AppSW: where each pixel's point of the world was in the last frame, seen with
+            // this frame's head pose (the runtime itself reprojects for the head), so the
+            // vectors hold the player's own movement and turns. The world is drawn
+            // camera-relative: a point now at p was at p + (camera now - camera then).
+            if let Some(warp_eyes) = xr.warp_eyes {
+                let now = xr_eye_view(eye, far);
+                let then = xr_eye_view(&warp_eyes[i], far);
+                let moved = (frame.camera - self.xr_warp_camera.unwrap_or(frame.camera)).as_vec3();
+                let previous = then.projection * then.view * Mat4::from_translation(moved);
+                let reproject = previous * (now.projection * now.view).inverse();
+                horizon_xr::space_warp_fill(
+                    i,
+                    &self.queue,
+                    &self.depth,
+                    reproject,
+                    (far, NEAR_PLANE),
+                    moved.length() > 4.0,
+                );
+            }
         }
+        self.xr_warp_camera = Some(frame.camera);
         self.xr_hud_skip = false;
         self.xr_eye_fov = None;
         if matches!(drawn, Ok(true)) {
@@ -11566,9 +11589,15 @@ impl Renderer {
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &self.depth,
                     depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(0.0),
+                        // VR: the arms are in the world, behind what is nearer, and the
+                        // world's depth stays for AppSW's motion vectors.
+                        load: if self.xr_view.is_some() {
+                            wgpu::LoadOp::Load
+                        } else {
+                            wgpu::LoadOp::Clear(0.0)
+                        },
                         // HDR output's hand marks test against it (below).
-                        store: if self.hdr.is_some() {
+                        store: if self.hdr.is_some() || self.xr_view.is_some() {
                             wgpu::StoreOp::Store
                         } else {
                             wgpu::StoreOp::Discard
