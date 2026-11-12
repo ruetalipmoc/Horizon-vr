@@ -1,22 +1,100 @@
 <p align="center">
-  <img src="docs/media/icon-256.png" width="128" alt="Horizon">
+  <img src="docs/media/icon-256.png" width="128" alt="Horizon VR">
 </p>
 
-<h1 align="center">Horizon для Android / Horizon for Android</h1>
+<h1 align="center">Horizon VR</h1>
 
 <p align="center">
-  Неофициальный порт Horizon (Minecraft: Java Edition на Rust) на Android<br>
-  Unofficial Android port of Horizon, Minecraft: Java Edition rewritten in Rust
+  Standalone VR for Meta Quest 3 on top of Horizon, Minecraft: Java Edition 26.3 rewritten in Rust<br>
+  VR standalone per Meta Quest 3 basata su Horizon, Minecraft: Java Edition 26.3 riscritto in Rust
 </p>
 
 <p align="center">
-  <a href="https://github.com/Rayan-XOO/horizon/releases/latest"><img src="https://img.shields.io/github/v/release/Rayan-XOO/horizon?label=release" alt="Latest release"></a>
-  <a href="https://github.com/Rayan-XOO/horizon/releases"><img src="https://img.shields.io/github/downloads/Rayan-XOO/horizon/total" alt="Downloads"></a>
-  <img src="https://img.shields.io/badge/version-0.3.0-2EA043" alt="Version 0.3.0">
-  <img src="https://img.shields.io/badge/Android-8.0%2B%20arm64-3DDC84?logo=android&logoColor=white" alt="Android 8.0+">
+  <a href="https://github.com/Boboetto/Horizon-vr/releases/latest"><img src="https://img.shields.io/github/v/release/Boboetto/Horizon-vr?label=release" alt="Latest release"></a>
+  <img src="https://img.shields.io/badge/Meta%20Quest-3-1C1E20" alt="Meta Quest 3">
   <img src="https://img.shields.io/badge/Minecraft-Java%2026.3-5D9C3F" alt="Minecraft Java 26.3">
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/Rayan-XOO/horizon" alt="License"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License MIT"></a>
 </p>
+
+> **Unofficial fan project.** Not affiliated with, endorsed by or connected to Mojang, Microsoft or Meta.
+> You need to **own Minecraft: Java Edition**. This repository and its releases contain **no Mojang files**:
+> the app downloads the official game files from Mojang's servers, and the "derived pack" is made by you,
+> from your own copy of the game (see below).
+
+A fork of [Rayan-XOO/horizon](https://github.com/Rayan-XOO/horizon) (the Android port of Horizon) that adds a native OpenXR VR mode, in the spirit of Vivecraft and QuestCraft.
+The VR code lives in `crates/horizon-xr` and in the VR paths of the renderer (`render_xr`) and of the Android input
+(`crates/horizon-client/src/game/android_input.rs`).
+
+## VR features
+
+- Stereo rendering with head tracking, sharpened compositor layer, CPU/GPU held at their sustained-high levels
+- Both arms on the Touch controllers; held items in the hands
+- Hotbar on the left forearm: hover it with the right controller and pull the trigger to pick a slot
+- Crosshair lying on the face of the block each hand aims at; the left trigger uses along the left hand,
+  the right trigger attacks along the right one, at the same time
+- Gestures: swing a sword at a mob, strike blocks with a tool to mine, bring food to the mouth to eat,
+  arm strokes to swim where you look, two-handed bow
+- Menus on a panel in the room, a pointer for each hand (each trigger clicks), 360° title panorama
+- Walking where the head looks (left stick), turning with the right stick
+
+## Controls
+
+| Input | In play | In a menu |
+|---|---|---|
+| Left stick | walk (where you look) | – |
+| Right stick | turn | scroll |
+| Right trigger | attack / mine / pick a wrist slot | click with the right pointer |
+| Left trigger | use / place along the left hand | click with the left pointer |
+| A | jump | confirm |
+| B | – | back |
+| Y | inventory | close inventory |
+| X | drop one item | drop one item (carried stack or slot) |
+| X held + Y | drop the rest of the stack | drop the rest of the stack |
+| Left grip | swap item with the off hand | – |
+| Both grips | debug screen (F3) | – |
+| Right grip | – | place one item of the carried stack; with the trigger: quick move |
+| Left / right stick click | sprint / sneak | – |
+| Menu button | pause | – |
+
+## Install
+
+1. Enable developer mode on the Quest and install `Horizon-VR-*.apk` from the
+   [releases](https://github.com/Boboetto/Horizon-vr/releases) (SideQuest, or open it in the headset's browser
+   and allow unknown sources).
+2. Start **Horizon VR**. The setup screen downloads the official game files from Mojang (about 525 MB).
+3. It then asks for `horizon-derived.zip`, the files only Mojang's Java exporters can make. Make it on a PC
+   from your own Minecraft: Java Edition 26.3 (Java 25 and Rust needed):
+
+   ```sh
+   git clone https://github.com/Boboetto/Horizon-vr && cd Horizon-vr
+   cargo run --release -p horizon-prepare -- --prepare --server-jar ~/Downloads/server.jar
+   ./packaging/android/make_derived_pack.sh      # writes target/android/horizon-derived.zip
+   ```
+
+   Copy it to the headset (`Android/data/dev.horizonlab.horizon/files/`) or pick it with the setup screen's
+   button. **Do not share this file**: it is derived from Mojang's game.
+
+Details on preparing the game files: [ANDROID.md](ANDROID.md).
+
+## Building
+
+```sh
+OPENXR_LOADER=/path/to/libopenxr_loader.so ANDROID_HOME=~/android/sdk ./packaging/android/build_apk.sh
+```
+
+`libopenxr_loader.so` is the Khronos OpenXR loader for Android (`org.khronos.openxr:openxr_loader_for_android`,
+Apache 2.0). Without it the game starts flat.
+
+## Credits
+
+Horizon by its authors (MIT), the Android port by Rayan-XOO (MIT). VR mode by the Horizon VR contributors.
+Minecraft is a trademark of Mojang Synergies AB; Meta Quest is a trademark of Meta Platforms, Inc.
+
+---
+
+## Upstream: Horizon for Android
+
+
 
 <p align="center">
   <a href="https://github.com/Rayan-XOO/horizon/releases/latest"><b>Скачать APK / Download APK</b></a> ·
