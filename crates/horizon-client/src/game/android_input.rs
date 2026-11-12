@@ -116,7 +116,8 @@ pub(super) fn pad_state() -> PadState {
 /// VR: the Touch controllers on top of any other controller. Right stick turns (the head
 /// looks up and down), left stick walks, A jumps, B goes back, Y opens the inventory,
 /// triggers use and attack, the sticks' clicks sprint and sneak, the menu button pauses.
-/// X (dropping) and the grips (F5, F3, one item from the carried stack) are `xr_buttons`'.
+/// X (dropping) and the grips (F5, the off hand, one item from the carried stack) are
+/// `xr_buttons`'.
 fn with_touch_controllers(mut pad: PadState, touch: horizon_xr::Pad) -> PadState {
     for (held, button) in [
         (touch.a, Button::South),
@@ -697,8 +698,8 @@ impl super::Game<'_> {
     /// held the rest of the stack: the held item in play (Q, Control+Q), in a menu the
     /// carried stack (clicks outside the window) or else the slot pointed at. In a menu the
     /// right grip puts one item of the carried stack where the pointer is (a right click).
-    /// In play the left grip alone changes the camera (F5), both grips together show or
-    /// hide the debug screen (F3).
+    /// In play the left grip alone changes the camera (F5), both grips together swap the
+    /// held item with the left hand's (F).
     fn xr_buttons(&mut self) {
         use std::sync::atomic::{AtomicU8, Ordering};
         use winit::keyboard::{KeyCode, ModifiersState};
@@ -753,11 +754,8 @@ impl super::Game<'_> {
             s.mouse.push(MouseInput::Button(1, false));
         }
         if playing && now & 12 == 12 && before & 12 != 12 {
-            use horizon_client::debug_keys::KeyAction;
-            self.physical_keys.insert(KeyCode::F3);
-            self.debug_key(KeyCode::F3, KeyAction::Press);
-            self.physical_keys.remove(&KeyCode::F3);
-            self.debug_key(KeyCode::F3, KeyAction::Release);
+            // key.swapOffhand (F): the held item to the left hand and back.
+            let _ = self.key_pressed(KeyCode::KeyF, KeyCode::KeyF);
         }
         if released(4) {
             if playing && chord == 0 {
