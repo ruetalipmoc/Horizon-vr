@@ -444,6 +444,16 @@ fn run(home: &Path, derived: &str) -> Result<(), String> {
 const JRE_ASSETS: &str = "assets/horizon-jre/";
 const PREPARE_ASSETS: &str = "assets/horizon-prepare/";
 
+/// The app's internal files folder (`/data/data/<package>/files`): the shared storage under
+/// `Android/data` cannot hold code (mapping it executable fails), this folder can.
+fn internal_dir() -> Option<PathBuf> {
+    let cmdline = fs::read("/proc/self/cmdline").ok()?;
+    let name = String::from_utf8_lossy(cmdline.split(|b| *b == 0).next()?).into_owned();
+    let package = name.split(':').next()?.to_string();
+    let dir = PathBuf::from(format!("/data/data/{package}/files"));
+    dir.is_dir().then_some(dir)
+}
+
 /// This app's APK: the runtime keeps it mapped (its dex and resources).
 fn apk_path() -> Option<PathBuf> {
     let maps = fs::read_to_string("/proc/self/maps").ok()?;
@@ -507,7 +517,9 @@ fn derive_on_device(
 ) -> Result<PathBuf, String> {
     stage("java");
     let apk = apk_path().ok_or("cannot find this app's APK")?;
-    let java_home = home.join("java");
+    // The runtime runs from internal storage; an earlier copy in shared storage goes.
+    let java_home = internal_dir().ok_or("cannot find the app's internal folder")?.join("java");
+    let _ = fs::remove_dir_all(home.join("java"));
     let root = home.join("prepare");
     unpack_assets(&apk, JRE_ASSETS, &java_home)?;
     unpack_assets(&apk, PREPARE_ASSETS, &root)?;
