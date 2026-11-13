@@ -16,7 +16,8 @@
 </p>
 
 > **Unofficial fan project.** Not affiliated with, endorsed by or connected to Mojang, Microsoft or Meta.
-> You need to **own Minecraft: Java Edition**. This repository and its releases contain **no Mojang files**.
+> You need to **own Minecraft: Java Edition**. This repository and its releases contain **no Mojang files**: the app
+> downloads them from Mojang on the headset.
 
 Horizon VR is a standalone APK for the **Meta Quest 3** (for now the only supported headset): no PC, no streaming.
 It plays Minecraft: Java Edition 26.3 in VR, with motion controls in the spirit of Vivecraft and QuestCraft.
@@ -61,58 +62,23 @@ It plays Minecraft: Java Edition 26.3 in VR, with motion controls in the spirit 
    (Or drag it onto **Meta Quest Developer Hub**.)
 4. In the headset, open **App Library → Unknown sources → Horizon VR**.
 
-## First start: horizon-derived.zip, from your computer to the Quest 3
+## First start
 
-On its first start Horizon VR needs **`horizon-derived.zip`**: game data that only Minecraft's own Java code can make,
-so your computer makes it from your own copy of the game, then sends it to the headset over Wi-Fi.
-The computer and the Quest 3 must be on the **same Wi-Fi network**.
+Press **Download game files** and wait a few minutes, on Wi-Fi:
 
-**On the computer**
+1. the headset downloads the official Minecraft: Java Edition 26.3 files from Mojang (about 700 MB);
+2. Horizon VR prepares its game data on the headset itself, with a Java runtime built into the app (about a minute);
+3. the game starts. Next time it opens straight away.
 
-1. Play **Minecraft: Java Edition 26.3** once from the **official Minecraft launcher**, then close it.
-2. Download **`Horizon-VR-Prepare-windows.zip`** (Linux: `Horizon-VR-Prepare-linux.zip`) from the
-   [latest release](https://github.com/Boboetto/Horizon-vr/releases/latest) and unzip it (right click → Extract all).
-3. Open the unzipped folder and double-click **`make-horizon-derived.bat`** (Linux: `make-horizon-derived.sh`).
-   - If Windows shows **"Windows protected your PC"**: click **More info**, then **Run anyway**.
-   - If Windows asks about the **firewall**: tick **Private networks** and click **Allow access**.
-     Without this the headset cannot find the computer.
-4. Wait about a minute. When the window says **"Now put on the headset"**, leave it **open**.
-
-**On the Quest 3**
-
-5. Open **Horizon VR**. On the setup screen press **"Get it from my computer (Wi-Fi)"**.
-6. When it says **"Got horizon-derived.zip ✓"**, press **"Download game files"**: it downloads the official
-   game files from Mojang (about 700 MB, a few minutes on Wi-Fi), then the game starts.
-7. You can now close the window on the computer.
-
-**If the headset cannot find the computer** ("no computer answered"):
-
-- check that the window on the computer is still open and says "Now put on the headset";
-- check that the Quest 3 and the computer are on the same Wi-Fi (not a guest network);
-- on Windows, allow the program in the firewall: Start → "Allow an app through Windows Firewall" →
-  tick `horizon-prepare` for **Private**, then press the button in the headset again.
-
-**Or with the cable**: connect the Quest 3 to the computer with USB, open SideQuest, click the **folder icon**
-(top right), go to `Android/data/dev.horizonlab.horizon/files/` and drag `horizon-derived.zip` there.
-Then open Horizon VR and press **"Download game files"**.
-
-`horizon-derived.zip` is made from Mojang's game: keep it for yourself and do not share it.
+No computer needed after installing. You need to own Minecraft: Java Edition.
 
 ## In italiano
 
-1. **Visore:** attiva la modalità sviluppatore (app Meta Horizon sul telefono → Dispositivi → visore →
+1. **Installa:** attiva la modalità sviluppatore (app Meta Horizon sul telefono → Dispositivi → visore →
    Impostazioni → Modalità sviluppatore) e installa l'APK dell'ultima release trascinandolo su **SideQuest**.
-   Si apre da **Libreria → Origini sconosciute → Horizon VR**.
-2. **Computer:** avvia una volta Minecraft: Java Edition 26.3 dal launcher ufficiale. Scarica ed estrai
-   `Horizon-VR-Prepare-windows.zip` e fai doppio clic su `make-horizon-derived.bat`.
-   Se Windows dice "PC protetto": *Ulteriori informazioni → Esegui comunque*. Se chiede del firewall:
-   spunta *Reti private → Consenti accesso*. Dopo circa un minuto la finestra dice "Now put on the headset":
-   **lasciala aperta**.
-3. **Quest 3** (stesso Wi-Fi del computer): apri Horizon VR, premi **"Get it from my computer (Wi-Fi)"**,
-   poi **"Download game files"**. Finito, puoi chiudere la finestra sul computer.
-4. Se il visore non trova il computer: controlla che la finestra sia aperta, che siate sullo stesso Wi-Fi e
-   che il firewall di Windows consenta `horizon-prepare` sulle reti private. In alternativa, col cavo: in
-   SideQuest icona cartella → `Android/data/dev.horizonlab.horizon/files/` → trascina lì `horizon-derived.zip`.
+2. **Apri** Horizon VR da **Libreria → Origini sconosciute**.
+3. **Premi "Download game files"** e aspetta qualche minuto col Wi-Fi: il visore scarica i file ufficiali da Mojang,
+   prepara da solo i dati di gioco e avvia Horizon VR. Nessun PC necessario. Serve possedere Minecraft: Java Edition.
 
 ## Building
 
@@ -121,7 +87,10 @@ OPENXR_LOADER=/path/to/libopenxr_loader.so ANDROID_HOME=~/android/sdk ./packagin
 ```
 
 `libopenxr_loader.so` is the Khronos OpenXR loader for Android (`org.khronos.openxr:openxr_loader_for_android`,
-Apache 2.0). The VR code is in `crates/horizon-xr`, the renderer's `render_xr` and
+Apache 2.0). For the first start to prepare the game data on the headset, set `HORIZON_APK_ASSETS` to a folder with
+`horizon-jre/` (a Java 25 runtime for Android arm64, plus the NDK's `libc++_shared.so` in its `lib/`) and
+`horizon-prepare/` (`research-lock.json`, `mods/horizon/src/test/java/dev/horizonlab/parity/` and the compiled
+`exporters/` from `horizon-prepare compile-exporters`). The VR code is in `crates/horizon-xr`, the renderer's `render_xr` and
 `crates/horizon-client/src/game/android_input.rs`.
 
 ## Credits
@@ -129,6 +98,8 @@ Apache 2.0). The VR code is in `crates/horizon-xr`, the renderer's `render_xr` a
 - **Horizon**, Minecraft: Java Edition rewritten in Rust, by its authors (MIT)
 - **Horizon for Android** by [Rayan-XOO](https://github.com/Rayan-XOO/horizon) (MIT), which this project forks
 - The Khronos OpenXR loader (Apache 2.0)
+- The Java 25 runtime for Android from [AngelAuraMC/angelauramc-openjdk-build](https://github.com/AngelAuraMC/angelauramc-openjdk-build)
+  (OpenJDK, GPLv2 with the Classpath Exception; source: [openjdk/jdk](https://github.com/openjdk/jdk)), its licences in the APK's `assets/horizon-jre/legal`
 - Inspired by Vivecraft and QuestCraft
 
 Minecraft is a trademark of Mojang Synergies AB. Meta Quest is a trademark of Meta Platforms, Inc.
