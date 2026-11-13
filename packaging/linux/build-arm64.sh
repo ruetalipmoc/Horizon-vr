@@ -11,14 +11,20 @@
 # Vulkan and Wayland are loaded at runtime, not at link time. OpenXR too
 # (libopenxr_loader.so.1); the flat window is the default. See docs/linux-openxr.md.
 #
-# zig (via cargo-zigbuild) supplies the linker and a glibc old enough for ROCKNIX.
-# A Debian bookworm arm64 sysroot supplies the ALSA and udev headers and shared
-# libraries. Do not pass --sysroot to the Rust linker: that would replace zig's
-# glibc with the sysroot's and the binary would need a newer glibc than ROCKNIX has.
+# zig (via cargo-zigbuild) is the linker. It also picks the oldest glibc the binary
+# may require. The ALSA and udev shared libraries come from a Debian arm64 sysroot,
+# and they must not need a newer glibc than that suffix: ld.lld checks them
+# (--no-allow-shlib-undefined). Bookworm's libasound.so and libudev.so reference
+# GLIBC_2.34 (pthread_once, dlopen, stat64), so the default suffix is 2.36.
+# Do not pass --sysroot to the Rust linker: that would replace zig's glibc.
 #
 #   packaging/linux/build-arm64.sh
-#   packaging/linux/build-arm64.sh --glibc 2.36
+#   packaging/linux/build-arm64.sh --debian bullseye
 #   packaging/linux/build-arm64.sh --no-default-features
+#
+# --debian bullseye builds a glibc 2.31 sysroot and links with .2.31, for a ROCKNIX
+# older than 2.36. The existing $HOME/arm64-sysroot is bookworm: pass another
+# --sysroot, do not reuse it. A 2.36 binary still runs on the Pi 500+.
 #
 # --no-default-features skips sound and controllers, so no sysroot is required.
 # Keeping either feature still compiles alsa-sys: horizon-dualsense depends on cpal
@@ -40,26 +46,24 @@
 #   libasound.so.2 libudev.so.1 libvulkan.so.1 libwayland-client.so.0
 # Pi OS also needs mesa-vulkan-drivers. On the Flip, start the binary from the
 # Wayland session, not from an SSH shell with no display.
-#
-# If the link fails on a missing GLIBC_2.3x symbol, the bookworm headers are
-# newer than the zig glibc suffix. Re-run with --glibc set to what `ldd --version`
-# prints on the Flip (2.36 matches this sysroot). An older suffix still runs on
-# the Pi; a newer one does not run on ROCKNIX.
+# ---
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
-GLIBC="${GLIBC:-2.31}"
+GLIBC="${GLIBC:-}"
+DEBIAN="${DEBIAN:-bookworm}"
 SYSROOT="${SYSROOT:-$HOME/arm64-sysroot}"
 PROFILE="${PROFILE:-fast}"
 NO_DEFAULT=0
 SKIP_SYSROOT=0
 
 usage() {
-  sed -n '2,47p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,/^# ---$/p' "$0" | sed 's/^# \{0,1\}//; s/^---$//'
   cat <<EOF
 Options:
-  --glibc VERSION          Minimum glibc (default: ${GLIBC}). Suffix on the zig target.
+  --glibc VERSION          Minimum glibc. Default follows --debian (bookworm: 2.36).
+  --debian SUITE           Sysroot suite when it is created (default: bookworm).
   --sysroot DIR            Debian arm64 sysroot (default: \$HOME/arm64-sysroot).
   --profile NAME           Cargo profile (default: fast).
   --no-default-features    No ALSA and no udev. No sound, no gamepads. No sysroot.
@@ -68,10 +72,24 @@ Options:
 EOF
 }
 
+# True when dotted version $1 is strictly older than $2.
+version_lt() {
+  local a1 a2 b1 b2
+  IFS=. read -r a1 a2 _ <<<"${1}.0"
+  IFS=. read -r b1 b2 _ <<<"${2}.0"
+  if ((10#$a1 < 10#$b1)); then return 0; fi
+  if ((10#$a1 > 10#$b1)); then return 1; fi
+  ((10#$a2 < 10#$b2))
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --glibc)
-      GLIBC="${2:?--glibc needs a version, for example 2.31}"
+      GLIBC="${2:?--glibc needs a version, for example 2.36}"
+      shift 2
+      ;;
+    --debian)
+      DEBIAN="${2:?--debian needs a suite, for example bookworm or bullseye}"
       shift 2
       ;;
     --sysroot)
@@ -118,6 +136,13 @@ if ! command -v rustup >/dev/null 2>&1; then
   exit 1
 fi
 
+if [[ -z "$GLIBC" ]]; then
+  case "$DEBIAN" in
+    bullseye) GLIBC=2.31 ;;
+    *) GLIBC=2.36 ;;
+  esac
+fi
+
 rustup target add aarch64-unknown-linux-gnu
 
 TARGET="aarch64-unknown-linux-gnu.${GLIBC}"
@@ -138,11 +163,11 @@ if [[ "$NO_DEFAULT" -eq 0 ]]; then
       echo "Need a Debian/Ubuntu host with sudo to build the arm64 sysroot, or pass --sysroot." >&2
       exit 1
     fi
-    echo "Installing the arm64 sysroot into $SYSROOT (Debian bookworm, glibc 2.36 headers)."
+    echo "Installing the arm64 sysroot into $SYSROOT (Debian $DEBIAN)."
     sudo apt-get install -y debootstrap qemu-user-static pkg-config
     if [[ ! -d "$SYSROOT/usr/bin" ]]; then
       sudo mkdir -p "$(dirname "$SYSROOT")"
-      sudo debootstrap --arch=arm64 bookworm "$SYSROOT" http://deb.debian.org/debian
+      sudo debootstrap --arch=arm64 "$DEBIAN" "$SYSROOT" http://deb.debian.org/debian
     fi
     sudo chroot "$SYSROOT" apt-get update
     sudo chroot "$SYSROOT" apt-get install -y libasound2-dev libudev-dev
@@ -150,6 +175,18 @@ if [[ "$NO_DEFAULT" -eq 0 ]]; then
   if [[ ! -f "$alsa_pc" || ! -f "$udev_pc" ]]; then
     echo "sysroot install finished but $alsa_pc is still missing." >&2
     exit 1
+  fi
+
+  if [[ -f "$SYSROOT/etc/os-release" ]] && grep -Eq 'VERSION_CODENAME=(bookworm|trixie)' "$SYSROOT/etc/os-release"; then
+    if version_lt "$GLIBC" 2.34; then
+      echo "This sysroot's libasound.so and libudev.so need GLIBC_2.34." >&2
+      echo "zig is targeting $GLIBC, so the link fails on pthread_once@GLIBC_2.34, stat64@GLIBC_2.33 and the rest." >&2
+      echo "Use the same sysroot with a matching suffix:" >&2
+      echo "  packaging/linux/build-arm64.sh --glibc 2.36" >&2
+      echo "A glibc 2.31 binary needs a bullseye sysroot, not this one:" >&2
+      echo "  packaging/linux/build-arm64.sh --debian bullseye --sysroot \"\$HOME/arm64-sysroot-bullseye\"" >&2
+      exit 1
+    fi
   fi
 
   export PKG_CONFIG_ALLOW_CROSS=1
