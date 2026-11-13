@@ -698,7 +698,6 @@ impl Game<'_> {
         }
         // VR: the headset paces frames (xrWaitFrame). A menu's 60 or an idle player's 10
         // would drop frames the headset is waiting for, and moving the head is not input.
-        #[cfg(target_os = "android")]
         if horizon_xr::active() {
             return;
         }

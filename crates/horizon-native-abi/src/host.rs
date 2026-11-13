@@ -113,6 +113,16 @@ impl Loaded {
         }
         Ok((Loaded { table, data_dir }, out))
     }
+
+    /// Opens a library the player installed and left on.
+    ///
+    /// Same contract as [`Self::open`]. The `unsafe` stays in this crate so the
+    /// client can keep `forbid(unsafe_code)` on desktop.
+    pub fn open_installed(path: &Path, data_dir: &Path) -> Result<(Loaded, Outbox), String> {
+        // SAFETY: the player installed the mod and left it on; it runs with the game's rights.
+        unsafe { Self::open(path, data_dir) }
+    }
+
     fn host(data_dir: &str, out: &mut Outbox) -> Host {
         Host {
             abi: ABI,

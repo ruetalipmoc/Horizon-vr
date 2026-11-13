@@ -94,8 +94,7 @@ pub(super) fn open(id: &str, name: &str, title: &str, lib: &std::path::Path) -> 
     if MODS.with(|m| m.borrow().iter().any(|m| m.id == id)) {
         return Ok(true);
     }
-    // SAFETY: the player installed the mod and left it on; it runs with the game's rights.
-    let Some(sdk) = (unsafe { SdkLib::open(lib) })? else {
+    let Some(sdk) = SdkLib::open_installed(lib)? else {
         return Ok(false);
     };
     MODS.with(|m| {

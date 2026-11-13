@@ -90,8 +90,22 @@ OPENXR_LOADER=/path/to/libopenxr_loader.so ANDROID_HOME=~/android/sdk ./packagin
 Apache 2.0). For the first start to prepare the game data on the headset, set `HORIZON_APK_ASSETS` to a folder with
 `horizon-jre/` (a Java 25 runtime for Android arm64, plus the NDK's `libc++_shared.so` in its `lib/`) and
 `horizon-prepare/` (`research-lock.json`, `mods/horizon/src/test/java/dev/horizonlab/parity/` and the compiled
-`exporters/` from `horizon-prepare compile-exporters`). The VR code is in `crates/horizon-xr`, the renderer's `render_xr` and
-`crates/horizon-client/src/game/android_input.rs`.
+`exporters/` from `horizon-prepare compile-exporters`). The VR code is in `crates/horizon-xr`, the renderer's `render_xr`, and
+`crates/horizon-client/src/game/xr_input.rs` (Android key and motion events stay in
+`android_input.rs`).
+
+## Linux (OpenXR)
+
+Desktop headsets use the same session as Quest: Monado, SteamVR, WiVRn, ALVR, or
+any other OpenXR runtime. The flat window (the path that
+[horizon-rust/horizon](https://github.com/horizon-rust/horizon) already runs on Linux)
+stays the default unless a runtime is configured. Details, build, and controls:
+[docs/linux-openxr.md](docs/linux-openxr.md).
+
+```sh
+# runtime already active (or set XR_RUNTIME_JSON / HORIZON_XR=1)
+cargo run -p horizon-client --release
+```
 
 ## Credits
 

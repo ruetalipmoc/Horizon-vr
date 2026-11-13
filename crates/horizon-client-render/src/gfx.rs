@@ -2254,15 +2254,13 @@ async fn open_backend(
 ) -> std::result::Result<Opened, NoDevice> {
     let name = backends_name(backends);
     // A headset: OpenXR makes the Vulkan instance and picks the GPU, and the frames go to
-    // its eyes instead of a window surface (crates/horizon-xr).
-    #[cfg(target_os = "android")]
+    // its eyes instead of a window surface (crates/horizon-xr). Linux stays on the window
+    // unless a runtime was asked for (`HORIZON_XR=1` or an active OpenXR runtime).
     let xr_opened = if backends.contains(wgpu::Backends::VULKAN) {
         horizon_xr::instance_and_adapter()
     } else {
         None
     };
-    #[cfg(not(target_os = "android"))]
-    let xr_opened: Option<(wgpu::Instance, wgpu::Adapter)> = None;
     let xr = xr_opened.is_some();
     let (instance, surface, adapter) = if let Some((instance, adapter)) = xr_opened {
         (instance, None, adapter)
@@ -2353,15 +2351,9 @@ async fn open_backend(
         memory_hints: wgpu::MemoryHints::MemoryUsage,
         ..Default::default()
     };
-    #[cfg(target_os = "android")]
     let xr_device = if xr {
         horizon_xr::open_device(&adapter, &desc)
     } else {
-        None
-    };
-    #[cfg(not(target_os = "android"))]
-    let xr_device = {
-        let _ = xr;
         None
     };
     #[cfg(not(target_os = "macos"))]
@@ -2586,7 +2578,6 @@ impl Renderer {
     ) -> Result<Self> {
         // VR: frames go to the headset's eyes, never to the window, also when the renderer
         // is rebuilt on the same device (resource reloads).
-        #[cfg(target_os = "android")]
         let offscreen = offscreen || horizon_xr::active();
         let Opened {
             instance,
@@ -2691,10 +2682,7 @@ impl Renderer {
                 wgpu::TextureFormat::Bgra8Unorm
             };
             // VR: the frame is an eye's image, which the eyes' copy pass samples.
-            #[cfg(target_os = "android")]
             let xr_eyes = horizon_xr::eye_size();
-            #[cfg(not(target_os = "android"))]
-            let xr_eyes: Option<[u32; 2]> = None;
             let [width, height] = xr_eyes.unwrap_or([size.width, size.height]);
             let config = wgpu::SurfaceConfiguration {
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT
@@ -4622,11 +4610,9 @@ impl Renderer {
             });
         // `HORIZON_MULTI_DRAW=0` (A/B checks): one draw per section and run. VR on Quest
         // too: Adreno drew no terrain from multi-draws on the headset's device (entities,
-        // drawn one by one, showed), while one draw per section draws it.
-        #[cfg(target_os = "android")]
-        let xr_device = horizon_xr::active();
-        #[cfg(not(target_os = "android"))]
-        let xr_device = false;
+        // drawn one by one, showed), while one draw per section draws it. Desktop OpenXR
+        // keeps multi-draw; that failure was the Quest GPU, not the stereo path.
+        let xr_device = cfg!(target_os = "android") && horizon_xr::active();
         let multi_draw = std::env::var("HORIZON_MULTI_DRAW").as_deref() != Ok("0")
             && !xr_device
             && device
@@ -5263,7 +5249,6 @@ impl Renderer {
     /// ([`drawable_size`]) keeps the last one and draws nothing until the next.
     pub fn resize(&mut self, width: u32, height: u32) {
         // VR: frames are the eyes' size whatever the window does.
-        #[cfg(target_os = "android")]
         let [width, height] = horizon_xr::eye_size().unwrap_or([width, height]);
         let max = self.device.limits().max_texture_dimension_2d;
         self.suspended = !drawable_size(width, height, max);
@@ -5372,7 +5357,6 @@ impl Renderer {
     /// graph's bits (`occlusion::Reach`), which are the same either way.
     pub fn set_gpu_culling(&mut self, on: bool) -> Result<()> {
         // VR: the pass drew no terrain from the eyes' views (the CPU's walk does).
-        #[cfg(target_os = "android")]
         let on = on && !horizon_xr::active();
         let on = on && fake_xr_fov().is_none();
         if !on {
@@ -7290,7 +7274,6 @@ impl Renderer {
     ) -> Frustum {
         // VR: the eyes see more than the game's field of view, and the head turns
         // between this and the frame.
-        #[cfg(target_os = "android")]
         let fov_degrees = if horizon_xr::active() {
             fov_degrees.max(125.0)
         } else {
@@ -7437,7 +7420,6 @@ impl Renderer {
         }
     }
     pub fn render(&mut self, frame: &Frame) -> Result<bool> {
-        #[cfg(target_os = "android")]
         if horizon_xr::active() {
             return self.render_xr(frame);
         }
@@ -7469,7 +7451,6 @@ impl Renderer {
     }
     /// VR: waits for the headset's frame, draws `frame` once per eye and hands each
     /// eye's image to the headset. A frame the headset skips still takes in its uploads.
-    #[cfg(target_os = "android")]
     fn render_xr(&mut self, frame: &Frame) -> Result<bool> {
         let Some(xr) = horizon_xr::begin_frame() else {
             let suspended = std::mem::replace(&mut self.suspended, true);
@@ -7556,7 +7537,6 @@ impl Renderer {
     }
     /// Development builds that send their log (HORIZON_LOG_URL) also save what the left
     /// eye (or the menu panel) shows now and then: there is no other way to look at it.
-    #[cfg(target_os = "android")]
     fn xr_dev_snapshot(&mut self) {
         if option_env!("HORIZON_LOG_URL").is_none() || self.screenshot.is_some() {
             return;
@@ -7574,7 +7554,6 @@ impl Renderer {
         }
     }
     /// VR: the frame's HUD alone, on a clear image, for its panel.
-    #[cfg(target_os = "android")]
     fn xr_draw_hud(&mut self, frame: &Frame, panel: horizon_xr::Panel) {
         let size = [self.config.width, self.config.height];
         let fits = self
@@ -12391,7 +12370,6 @@ fn off_centre_projection([left, right, up, down]: [f32; 4], far: f32) -> Mat4 {
 }
 
 /// One eye of a headset: its rotation and offset from the camera, and its lens.
-#[cfg(target_os = "android")]
 fn xr_eye_view(eye: &horizon_xr::Eye, far: f32) -> View {
     eye_view(eye.rotation, eye.offset, eye.fov, far)
 }
@@ -12413,10 +12391,7 @@ fn eye_view(rotation: glam::Quat, offset: Vec3, fov: [f32; 4], far: f32) -> View
 /// eyes the split's thousands of draws cost the Quest more than the faces it saves.
 /// `HORIZON_XR_SPLIT=1` brings the split back, for A/B checks.
 fn xr_whole_sections() -> bool {
-    #[cfg(target_os = "android")]
-    return horizon_xr::active() && std::env::var("HORIZON_XR_SPLIT").as_deref() != Ok("1");
-    #[cfg(not(target_os = "android"))]
-    false
+    horizon_xr::active() && std::env::var("HORIZON_XR_SPLIT").as_deref() != Ok("1")
 }
 
 /// `HORIZON_FAKE_XR`: a Quest 3 left eye's lens (`1`), or four tangents
@@ -12434,7 +12409,6 @@ fn fake_xr_fov() -> Option<[f32; 4]> {
 }
 
 /// A view from the camera that sees everything either eye does, to cull with.
-#[cfg(target_os = "android")]
 fn xr_cull_view(eyes: &[horizon_xr::Eye; 2], far: f32) -> View {
     let [a, b] = eyes.map(|e| e.fov);
     // The eyes' own frustums with a little to spare for the reprojection's edges: a wide

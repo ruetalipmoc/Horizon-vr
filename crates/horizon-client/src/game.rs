@@ -309,6 +309,7 @@ mod pad_actions;
 mod android_ime;
 #[cfg(target_os = "android")]
 mod android_input;
+mod xr_input;
 mod touch;
 mod pad_menu;
 mod paintings;
@@ -20006,7 +20007,6 @@ impl Game<'_> {
                     self.apply_mouse_look();
                     self.pad_look(elapsed.as_secs_f32());
                     // VR: the head looks around, after the sticks turned the body.
-                    #[cfg(target_os = "android")]
                     self.xr_look();
                     self.advance_flight();
                     self.tick_world_icon();
@@ -20270,6 +20270,7 @@ impl Game<'_> {
             return;
         }
         self.touch_frame();
+        self.xr_input_frame(event_loop);
         #[cfg(target_os = "android")]
         self.android_input_frame(event_loop);
         horizon_client::spans::time("pads", || self.poll_pads(event_loop));
@@ -20326,22 +20327,14 @@ impl Game<'_> {
 /// VR: the controller holding the `left` or right arm, camera-relative world from its
 /// own axes (-Z ahead, toward the elbow is +Z); `None` off VR or while it isn't tracked.
 fn vr_hand_frame(left: bool) -> Option<glam::Mat4> {
-    #[cfg(target_os = "android")]
-    {
-        let hands = horizon_xr::active().then(horizon_xr::last_hands).flatten()?;
-        use horizon_xr::Hand;
-        // The hand at the grip; the arm along where the controller points (the handle
-        // slants: along it, the arm hung down).
-        let (grip, aim) = if left { (Hand::LeftGrip, Hand::LeftAim) } else { (Hand::RightGrip, Hand::RightAim) };
-        let at = hands[grip as usize]?.offset;
-        let along = hands[aim as usize]?.rotation;
-        return Some(glam::Mat4::from_translation(at) * glam::Mat4::from_quat(along));
-    }
-    #[cfg(not(target_os = "android"))]
-    {
-        let _ = left;
-        None
-    }
+    let hands = horizon_xr::active().then(horizon_xr::last_hands).flatten()?;
+    use horizon_xr::Hand;
+    // The hand at the grip; the arm along where the controller points (the handle
+    // slants: along it, the arm hung down).
+    let (grip, aim) = if left { (Hand::LeftGrip, Hand::LeftAim) } else { (Hand::RightGrip, Hand::RightAim) };
+    let at = hands[grip as usize]?.offset;
+    let along = hands[aim as usize]?.rotation;
+    Some(glam::Mat4::from_translation(at) * glam::Mat4::from_quat(along))
 }
 
 /// How long the player's arm is in VR, as a share of the model's (12 pixels).
@@ -20371,10 +20364,7 @@ fn vr_item_local(base: glam::Mat4) -> glam::Mat4 {
 }
 /// VR is on (the headset shows the game).
 fn vr_active() -> bool {
-    #[cfg(target_os = "android")]
-    return horizon_xr::active();
-    #[cfg(not(target_os = "android"))]
-    false
+    horizon_xr::active()
 }
 
 /// VR development builds (that send their log) time the GPU's passes for the report.
@@ -20384,10 +20374,7 @@ fn vr_dev_timing() -> bool {
 
 /// VR aims with the right controller: a crosshair in the middle of the view would lie.
 fn vr_hides_crosshair() -> bool {
-    #[cfg(target_os = "android")]
-    return horizon_xr::active();
-    #[cfg(not(target_os = "android"))]
-    false
+    horizon_xr::active()
 }
 /// clouds.png as filled cells (`CloudRenderer.prepare`: alpha 10 or more).
 fn load_clouds(root: &std::path::Path) -> (u32, u32, Vec<bool>) {

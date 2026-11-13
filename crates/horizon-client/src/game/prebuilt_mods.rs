@@ -255,8 +255,7 @@ impl Game<'_> {
             }
             let m = &self.prebuilt.mods[i];
             let data = home.join(".horizon-mod-data").join(&m.id);
-            // SAFETY: the player installed the mod and left it on; it runs with the game's rights.
-            let opened = unsafe { Loaded::open(&m.lib, &data) };
+            let opened = Loaded::open_installed(&m.lib, &data);
             let id = m.id.clone();
             match opened {
                 Ok((loaded, out)) => {

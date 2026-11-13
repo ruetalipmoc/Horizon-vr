@@ -660,7 +660,6 @@ impl Graphics {
 /// VR: leaves left at `Off` cull the faces only seen through two leaves (`Hidden`): a
 /// crown looks the same from outside, with far fewer faces for the headset to draw twice.
 fn vr_leaf_culling(mode: LeafCullingMode) -> LeafCullingMode {
-    #[cfg(target_os = "android")]
     if mode == LeafCullingMode::Off && horizon_xr::active() {
         return LeafCullingMode::Hidden;
     }

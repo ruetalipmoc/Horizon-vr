@@ -11008,7 +11008,6 @@ impl horizon_client::interaction_input::InteractionWorld for RemoteInputWorld<'_
         self.0.remote_start_attack()
     }
     fn start_use(&mut self) {
-        #[cfg(target_os = "android")]
         if horizon_xr::active() {
             self.0.xr_left_use(Game::remote_use);
             return;

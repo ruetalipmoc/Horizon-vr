@@ -928,6 +928,15 @@ pub mod host {
             Ok(Some(Self { _lib: lib, entry }))
         }
 
+        /// Opens a library the player installed and left on.
+        ///
+        /// `Ok(None)` when it is a plain ABI mod. See [`Self::open`]. The `unsafe`
+        /// stays in this crate so the client can keep `forbid(unsafe_code)` on desktop.
+        pub fn open_installed(path: &std::path::Path) -> Result<Option<Self>, String> {
+            // SAFETY: the player installed the mod and left it on; it runs with the game's rights.
+            unsafe { Self::open(path) }
+        }
+
         /// One call; none when the mod's answer can't be read.
         pub fn call(&self, req: &Request, atlas_version: u64, lookup: Lookup<'_>) -> Option<Reply> {
             let bytes = postcard::to_allocvec(req).ok()?;

@@ -169,7 +169,7 @@ impl Pads {
     pub(super) fn read(&mut self) -> PadState {
         self.start();
         let Some(gilrs) = self.devices.gilrs.as_mut() else {
-            return PadState::default();
+            return crate::game::xr_input::overlay(PadState::default());
         };
         let active = self.devices.active;
         while let Some(gilrs::Event { id, event, .. }) = gilrs.next_event() {
@@ -222,12 +222,12 @@ impl Pads {
             // Before any pad is touched (the virtual pad playing), a DualSense still shows it.
             self.devices.dualsense = gilrs.gamepads().any(|(_, pad)| is_dualsense(&pad));
             self.device = gilrs.gamepads().next().map(|(_, pad)| device_of(&pad));
-            return PadState::default();
+            return crate::game::xr_input::overlay(PadState::default());
         };
         self.device = Some(device_of(&pad));
         self.style = GlyphStyle::of_device(pad.vendor_id(), pad.product_id());
         self.devices.dualsense = is_dualsense(&pad);
-        state_of(&pad)
+        crate::game::xr_input::overlay(state_of(&pad))
     }
 }
 
