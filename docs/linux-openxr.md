@@ -37,6 +37,21 @@ cargo run --release -p horizon-prepare -- --download
 cargo run --profile fast -p horizon-client -- --resources .local/horizon-client/26.3
 ```
 
+### aarch64 from a PC
+
+Raspberry Pi OS 64-bit (Pi 500+) and ROCKNIX on a Snapdragon (Retroid Pocket Flip 2)
+take the same `aarch64-unknown-linux-gnu` binary. [`packaging/linux/build-arm64.sh`](../packaging/linux/build-arm64.sh)
+cross-compiles it with `cargo zigbuild` (glibc 2.31 by default, so a ROCKNIX system
+still loads it) and a Debian bookworm sysroot for ALSA and udev. Sound goes through
+cpal's ALSA host; there is no PipeWire backend to compile against. Vulkan and Wayland
+are loaded at runtime.
+
+```sh
+packaging/linux/build-arm64.sh
+packaging/linux/build-arm64.sh --glibc 2.36
+packaging/linux/build-arm64.sh --no-default-features   # no sound, no gamepads, no sysroot
+```
+
 Eye resolution is the runtime's recommended size. `HORIZON_XR_SCALE` (0.4..1.4)
 changes that share. On Quest the default scale stays 0.7.
 
