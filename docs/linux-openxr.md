@@ -73,13 +73,15 @@ A profile the runtime does not implement is skipped. The others still bind.
 ## Controls
 
 Same as Quest (see the README): sticks walk and turn, triggers attack and use,
-grips swap hands / debug screen, the menu button pauses. The window stays open
-as the winit event loop; frames are submitted to the headset, not to that window.
+grips swap hands / debug screen, the menu button pauses. The desktop window
+shows the same menu the headset puts on the room panel, and one eye while
+playing (letterboxed, not stretched). `HORIZON_XR_MIRROR=0` leaves that window
+empty. The copy does not wait on the monitor, so it does not cap the headset.
 
 ## Not done yet
 
 - macOS and Windows OpenXR (the crate compiles a stub there).
 - Vive wands and WMR controllers (their grip is a click, not a float squeeze).
-- A hidden companion window. The desktop window is still created.
+- The in-game mirror is one eye, without the HUD panel that floats in front of it.
 - Installing a system `libopenxr_loader.so.1` is left to the distro package
   (`libopenxr-loader1` on Debian, `openxr-loader` elsewhere).

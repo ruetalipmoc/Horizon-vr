@@ -52,6 +52,7 @@ mod inter_stage_tests;
 pub(crate) mod test_gpu;
 mod weather;
 mod world_text;
+mod xr_mirror;
 use entity_batch::EntityBatch;
 pub use entity_batch::{
     DISSOLVE_OVERLAY, DRAGON_RAYS_OVERLAY, ENERGY_SWIRL_OVERLAY, FLUID_OVERLAY, OIT_ENTITY,
@@ -1079,6 +1080,9 @@ pub struct Renderer {
     xr_hud_skip: bool,
     /// VR: the HUD's panel image, the frame's size.
     xr_hud: Option<wgpu::Texture>,
+    /// VR on a desktop: the winit window, showing the menu or one eye. Absent on
+    /// Android (no window on screen) and when the launch is headless.
+    xr_mirror: Option<xr_mirror::XrMirror>,
     /// Offscreen submissions still on the GPU: at most two frames run ahead.
     in_flight: std::collections::VecDeque<wgpu::SubmissionIndex>,
     /// Splitscreen: the caller waits for the GPU once every player has submitted
@@ -2576,8 +2580,13 @@ impl Renderer {
         linear_pack: bool,
         hdr_float: bool,
     ) -> Result<Self> {
-        // VR: frames go to the headset's eyes, never to the window, also when the renderer
-        // is rebuilt on the same device (resource reloads).
+        // VR: frames go to the headset's eyes. On a desktop the window still gets a
+        // copy (`xr_mirror`); Android has no window on screen, and `--offscreen` asked
+        // for none. Also when the renderer is rebuilt on the same device.
+        let mirror_window = !offscreen
+            && horizon_xr::active()
+            && xr_mirror::wanted()
+            && !cfg!(target_os = "android");
         let offscreen = offscreen || horizon_xr::active();
         let Opened {
             instance,
@@ -4732,6 +4741,17 @@ impl Renderer {
             ));
         }
         let world_primitives = world_primitives::WorldPrimitives::new(&device, frame_format);
+        let xr_mirror = if mirror_window {
+            match xr_mirror::XrMirror::new(&instance, &adapter, &device, window.clone()) {
+                Ok(mirror) => Some(mirror),
+                Err(e) => {
+                    log::warn!("Horizon VR: no desktop mirror ({e})");
+                    None
+                }
+            }
+        } else {
+            None
+        };
         Ok(Self {
             display: DisplayWatch::default(),
             display_fresh: false,
@@ -4745,6 +4765,7 @@ impl Renderer {
             xr_snapshot: None,
             xr_hud_skip: false,
             xr_hud: None,
+            xr_mirror,
             in_flight: std::collections::VecDeque::new(),
             paced_elsewhere: false,
             first_frame: if previous.is_none() {
@@ -5128,6 +5149,9 @@ impl Renderer {
     pub fn release_surface(&mut self) {
         self.frame_gen.stop();
         self.queue.wait();
+        // The mirror holds the window's other surface. Drop it before a replacement
+        // creates its own: Wayland allows one of these per window.
+        self.xr_mirror = None;
         *self
             .spare_surface
             .get_mut()
@@ -7467,8 +7491,8 @@ impl Renderer {
         // Each section in one draw (`xr_whole_sections`): the GPU drops the faces turned
         // away itself, cheaper than thousands of draws per eye.
         self.sides_on = !xr_whole_sections();
-        // The headset shows the frames, not the window: a window Android hid (the
-        // immersive activity has none on screen) does not stop them.
+        // The headset shows the frames. The desktop window, when there is one, gets a
+        // copy afterwards: the menu panel, or one eye while playing.
         let suspended = std::mem::replace(&mut self.suspended, false);
         // A menu, the title screen or a loading screen goes to a panel fixed in the room,
         // with the world (or the title panorama) around it; in play the HUD rides before
@@ -7504,6 +7528,16 @@ impl Renderer {
         self.xr_eye_fov = None;
         if matches!(drawn, Ok(true)) {
             self.xr_draw_hud(frame, panel);
+        }
+        if let Some(mirror) = self.xr_mirror.as_mut() {
+            let source = if panel == horizon_xr::Panel::Room {
+                self.xr_hud.as_ref()
+            } else {
+                self.offscreen.as_ref()
+            };
+            if let Some(source) = source {
+                mirror.present(&self.device, &self.queue, source);
+            }
         }
         self.suspended = suspended;
         self.xr_view = None;
