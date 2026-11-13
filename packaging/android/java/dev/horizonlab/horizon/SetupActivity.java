@@ -67,11 +67,16 @@ public class SetupActivity extends Activity
             return;
         }
         LinearLayout card = Ui.card(this);
-        card.addView(Ui.text(this, "Horizon", 32, Ui.TEXT, true));
-        card.addView(Ui.text(this, Ui.t("Первый запуск", "First launch"), 15, Ui.MUTED, false));
+        TextView logo = Ui.text(this, "HORIZON VR", 34, Ui.TEXT, true);
+        logo.setLetterSpacing(0.08f);
+        logo.setGravity(android.view.Gravity.CENTER_HORIZONTAL);
+        card.addView(logo);
+        TextView first = Ui.text(this, Ui.t("Первый запуск", "First launch"), 15, Ui.WARN, false);
+        first.setGravity(android.view.Gravity.CENTER_HORIZONTAL);
+        card.addView(first);
         card.addView(Ui.text(this, Ui.t(
-                "Игре нужны файлы Minecraft 26.3. Они скачаются автоматически, около 700 МБ. Лучше подключиться к Wi-Fi.",
-                "The game needs the Minecraft 26.3 files. They will be downloaded automatically, about 700 MB. Wi-Fi is best."),
+                "Игре нужны файлы Minecraft 26.3: они скачаются автоматически (около 700 МБ, лучше по Wi-Fi), потом Horizon VR подготовит свои данные. Несколько минут, и игра запустится сама.",
+                "The game needs the Minecraft 26.3 files: they download by themselves (about 700 MB, Wi-Fi is best), then Horizon VR prepares its data. A few minutes, then the game starts by itself."),
                 15, Ui.TEXT, false), Ui.gap(this, 12));
         note = Ui.text(this, "", 14, Ui.WARN, false);
         note.setVisibility(View.GONE);
@@ -79,33 +84,6 @@ public class SetupActivity extends Activity
         button = Ui.button(this, Ui.t("Скачать файлы игры", "Download game files"), true);
         button.setOnClickListener(this);
         card.addView(button, Ui.gap(this, 18));
-        Button pick = Ui.button(this, Ui.t("Выбрать horizon-derived.zip", "Pick horizon-derived.zip"), false);
-        pick.setOnClickListener(new View.OnClickListener() {
-            public void onClick(View v) {
-                Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-                i.addCategory(Intent.CATEGORY_OPENABLE);
-                i.setType("*/*");
-                i.putExtra(Intent.EXTRA_MIME_TYPES, new String[] {"application/zip", "application/x-zip-compressed", "application/octet-stream"});
-                try {
-                    startActivityForResult(i, PICK_ZIP);
-                } catch (android.content.ActivityNotFoundException e) {
-                    showNote(Ui.t("Нет приложения для выбора файлов.", "No file picker app found."));
-                }
-            }
-        });
-        // Horizon VR: horizon-derived.zip straight from the computer that made it, over the
-        // home Wi-Fi (Horizon-VR-Prepare offers it while its window is open).
-        Button fetch = Ui.button(this, "Get it from my computer (Wi-Fi)", nativeDefaultUrl().isEmpty());
-        fetch.setOnClickListener(new View.OnClickListener() {
-            public void onClick(View v) {
-                fetchFromComputer();
-            }
-        });
-        // A build with the data pack's address needs no file picked by hand.
-        if (nativeDefaultUrl().isEmpty() && !new File(home, "horizon-derived.zip").isFile()) {
-            card.addView(fetch, Ui.gap(this, 8));
-        }
-        if (nativeDefaultUrl().isEmpty()) card.addView(pick, Ui.gap(this, 8));
         bar = new Ui.Bar(this);
         bar.setVisibility(View.GONE);
         card.addView(bar, Ui.gap(this, 18));
@@ -135,145 +113,12 @@ public class SetupActivity extends Activity
         profile = Ui.button(this, Ui.t("Профиль: ник и скин", "Profile: name and skin"), false);
         profile.setOnClickListener(this);
         card.addView(profile, Ui.gap(this, 14));
-        if (!haveDerived()) {
-            showNote(Ui.t(
-                    "Нужен horizon-derived.zip: создайте его на компьютере программой Horizon-VR-Prepare и нажмите «Get it from my computer».",
-                    "First get horizon-derived.zip: make it on your computer with Horizon-VR-Prepare, keep its window open, then press Get it from my computer (Wi-Fi)."));
-        }
         if (android.os.Build.VERSION.SDK_INT >= 33) {
             requestPermissions(new String[] {"android.permission.POST_NOTIFICATIONS"}, 1);
         }
         if (nativeStatus().contains("\trun\t")) {
             running();
         }
-    }
-
-    private static final int PICK_ZIP = 7;
-    /** Kept in step with crates/horizon-prepare/src/vr_pack.rs. */
-    private static final int FIND_PORT = 47821;
-
-    /**
-     * Asks the home network for a computer running Horizon-VR-Prepare (a UDP broadcast)
-     * and takes horizon-derived.zip from it: its length (8 bytes, big-endian) then its bytes.
-     */
-    private void fetchFromComputer() {
-        showNote("Looking for your computer… keep Horizon-VR-Prepare's window open on it.");
-        button.setEnabled(false);
-        new Thread(new Runnable() {
-            public void run() {
-                String msg;
-                File tmp = new File(home, "horizon-derived.zip.part");
-                try {
-                    java.net.InetAddress host = null;
-                    int port = 0;
-                    try (java.net.DatagramSocket udp = new java.net.DatagramSocket()) {
-                        udp.setBroadcast(true);
-                        udp.setSoTimeout(1500);
-                        byte[] ask = "HORIZON-VR-FIND".getBytes("US-ASCII");
-                        byte[] buf = new byte[64];
-                        for (int i = 0; i < 6 && host == null; i++) {
-                            udp.send(new java.net.DatagramPacket(ask, ask.length,
-                                    java.net.InetAddress.getByName("255.255.255.255"), FIND_PORT));
-                            java.net.DatagramPacket reply = new java.net.DatagramPacket(buf, buf.length);
-                            try {
-                                udp.receive(reply);
-                            } catch (java.net.SocketTimeoutException e) {
-                                continue;
-                            }
-                            String text = new String(reply.getData(), 0, reply.getLength(), "US-ASCII");
-                            if (text.startsWith("HORIZON-VR-HERE ")) {
-                                port = Integer.parseInt(text.substring(16).trim());
-                                host = reply.getAddress();
-                            }
-                        }
-                    }
-                    if (host == null) throw new java.io.IOException(
-                            "no computer answered. Is Horizon-VR-Prepare's window still open, on the same Wi-Fi? "
-                                    + "If Windows asked about the firewall, allow access, then try again.");
-                    final String found = host.getHostAddress();
-                    handler.post(new Runnable() {
-                        public void run() {
-                            showNote("Receiving horizon-derived.zip from " + found + "…");
-                        }
-                    });
-                    try (java.net.Socket socket = new java.net.Socket()) {
-                        socket.connect(new java.net.InetSocketAddress(host, port), 5000);
-                        socket.setSoTimeout(15000);
-                        java.io.DataInputStream in = new java.io.DataInputStream(socket.getInputStream());
-                        long left = in.readLong();
-                        if (left <= 4 || left > (1L << 30)) throw new java.io.IOException("bad size " + left);
-                        try (java.io.OutputStream out = new java.io.FileOutputStream(tmp)) {
-                            byte[] buf = new byte[1 << 16];
-                            boolean first = true;
-                            while (left > 0) {
-                                int n = in.read(buf, 0, (int) Math.min(buf.length, left));
-                                if (n < 0) throw new java.io.IOException("the transfer stopped");
-                                if (first && (n < 4 || buf[0] != 'P' || buf[1] != 'K'))
-                                    throw new java.io.IOException("this is not a zip archive");
-                                first = false;
-                                out.write(buf, 0, n);
-                                left -= n;
-                            }
-                        }
-                    }
-                    File dst = new File(home, "horizon-derived.zip");
-                    if (dst.exists() && !dst.delete()) throw new java.io.IOException("delete failed");
-                    if (!tmp.renameTo(dst)) throw new java.io.IOException("rename failed");
-                    msg = "Got horizon-derived.zip \u2713 Now tap Download game files.";
-                } catch (Exception e) {
-                    tmp.delete();
-                    msg = "Could not get it from your computer: "
-                            + String.valueOf(e.getMessage() != null ? e.getMessage() : e);
-                }
-                final String m = msg;
-                handler.post(new Runnable() {
-                    public void run() {
-                        showNote(m);
-                        button.setEnabled(true);
-                    }
-                });
-            }
-        }).start();
-    }
-
-    @Override
-    protected void onActivityResult(int request, int result, Intent data) {
-        super.onActivityResult(request, result, data);
-        if (request != PICK_ZIP || result != RESULT_OK || data == null || data.getData() == null) return;
-        final android.net.Uri uri = data.getData();
-        showNote(Ui.t("Копирую архив…", "Copying the archive…"));
-        button.setEnabled(false);
-        new Thread(new Runnable() {
-            public void run() {
-                File tmp = new File(home, "horizon-derived.zip.part");
-                String msg;
-                try (java.io.InputStream in = getContentResolver().openInputStream(uri);
-                     java.io.OutputStream out = new java.io.FileOutputStream(tmp)) {
-                    if (in == null) throw new java.io.IOException(Ui.t("файл не открылся", "the file did not open"));
-                    byte[] buf = new byte[1 << 16];
-                    int n = in.read(buf, 0, 4);
-                    if (n < 4 || buf[0] != 'P' || buf[1] != 'K' || buf[2] != 3 || buf[3] != 4)
-                        throw new java.io.IOException(Ui.t("это не zip-архив", "this is not a zip archive"));
-                    out.write(buf, 0, n);
-                    while ((n = in.read(buf)) != -1) out.write(buf, 0, n);
-                    out.flush();
-                    File dst = new File(home, "horizon-derived.zip");
-                    if (dst.exists() && !dst.delete()) throw new java.io.IOException("delete failed");
-                    if (!tmp.renameTo(dst)) throw new java.io.IOException("rename failed");
-                    msg = Ui.t("Архив на месте. Нажмите «Скачать файлы игры».", "The archive is in place. Tap Download game files.");
-                } catch (Exception e) {
-                    tmp.delete();
-                    msg = Ui.t("Не удалось скопировать архив: ", "Could not copy the archive: ") + String.valueOf(e.getMessage() != null ? e.getMessage() : e);
-                }
-                final String m = msg;
-                handler.post(new Runnable() {
-                    public void run() {
-                        showNote(m);
-                        button.setEnabled(true);
-                    }
-                });
-            }
-        }).start();
     }
 
     private void showNote(String s) {

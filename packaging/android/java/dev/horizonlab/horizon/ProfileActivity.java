@@ -50,8 +50,8 @@ public class ProfileActivity extends Activity implements View.OnClickListener {
     private String verifyUri = "https://www.microsoft.com/link";
     private boolean slim;
 
-    private static final int PANEL = Color.rgb(26, 27, 33);
-    private static final int FIELD = Color.rgb(20, 21, 26);
+    private static final int PANEL = Ui.CARD;
+    private static final int FIELD = Color.rgb(30, 30, 32);
 
     @Override
     protected void onCreate(Bundle state) {
@@ -63,8 +63,7 @@ public class ProfileActivity extends Activity implements View.OnClickListener {
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.HORIZONTAL);
-        root.setBackground(new GradientDrawable(GradientDrawable.Orientation.TL_BR,
-                new int[] {Color.rgb(22, 30, 30), Ui.BG, Color.rgb(8, 8, 11)}));
+        root.setBackground(Ui.blocks(this));
         int pad = Ui.dp(this, 16);
         root.setPadding(pad, pad, pad, pad);
 
@@ -76,7 +75,8 @@ public class ProfileActivity extends Activity implements View.OnClickListener {
         LinearLayout head = new LinearLayout(this);
         head.setOrientation(LinearLayout.HORIZONTAL);
         head.setGravity(Gravity.CENTER_VERTICAL);
-        TextView title = Ui.text(this, "Horizon", 22, Ui.TEXT, true);
+        TextView title = Ui.text(this, "HORIZON VR", 24, Ui.TEXT, true);
+        title.setLetterSpacing(0.06f);
         head.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
         TextView ver = Ui.text(this, version(), 12, Ui.MUTED, false);
         head.addView(ver);
@@ -99,7 +99,7 @@ public class ProfileActivity extends Activity implements View.OnClickListener {
         name.setSingleLine(true);
         name.setTextColor(Ui.TEXT);
         name.setHintTextColor(Ui.MUTED);
-        name.setHint("Steve_123");
+        name.setHint("Player_123");
         name.setTextSize(16);
         name.setFilters(new InputFilter[] {new InputFilter.LengthFilter(16)});
         name.setPadding(p, Ui.dp(this, 8), p, Ui.dp(this, 8));
