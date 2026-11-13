@@ -104,7 +104,8 @@ stays the default unless a runtime is configured. Details, build, and controls:
 
 ```sh
 # runtime already active (or set XR_RUNTIME_JSON / HORIZON_XR=1)
-cargo run -p horizon-client --release
+cargo run --release -p horizon-prepare -- --download
+cargo run --profile fast -p horizon-client -- --resources .local/horizon-client/26.3
 ```
 
 ## Credits

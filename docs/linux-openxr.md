@@ -27,12 +27,15 @@ Point `OPENXR_LOADER` at another file if the soname is not on the library path.
 
 ```sh
 # Same host deps as horizon-rust/horizon (Vulkan, ALSA, udev). The OpenXR loader
-# is only needed to run in VR, not to compile.
-cargo run -p horizon-client --release
-```
+# is only needed to run in VR, not to compile. Java 25 is needed to prepare.
+cargo build --profile fast -p horizon-client
 
-Prepare Minecraft's files the way upstream does (`horizon-prepare`, a owned Java
-edition). This repository ships none of Mojang's files.
+# Official Mojang files for the pinned version (client, server, libraries, assets),
+# sha1-checked, written to .local/mojang and not committed. Then prepares the resources.
+cargo run --release -p horizon-prepare -- --download
+
+cargo run --profile fast -p horizon-client -- --resources .local/horizon-client/26.3
+```
 
 Eye resolution is the runtime's recommended size. `HORIZON_XR_SCALE` (0.4..1.4)
 changes that share. On Quest the default scale stays 0.7.

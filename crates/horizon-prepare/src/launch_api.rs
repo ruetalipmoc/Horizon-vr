@@ -13,6 +13,7 @@ pub const VERSION: &str = "0.1.0";
 /// (`sounds`, `fonts`...) stay out: `--complete` runs what a launcher needs of them.
 pub const OPTIONS: &[(&str, Option<&str>)] = &[
     ("--prepare", None),
+    ("--download", None),
     ("--server-jar", Some("PATH")),
     ("--minecraft-dir", Some("PATH")),
     ("--version-json", Some("PATH")),

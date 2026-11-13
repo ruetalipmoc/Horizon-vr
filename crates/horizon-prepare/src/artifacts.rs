@@ -11,15 +11,15 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 const LAUNCHER_HINT: &str =
-    "Horizon does not download the game: play {version} once in the launcher you play \
-Minecraft Java Edition with so it downloads the game's files, then rerun. Horizon reads the \
+    "The pinned game files are not on this computer. Run horizon-prepare --download to fetch \
+Minecraft {version} from Mojang (sha1-checked, kept in .local/mojang, not committed), or play \
+{version} once in the launcher you already use and pass --minecraft-dir. Horizon reads the \
 official launcher's folder, ATLauncher's and the CurseForge app's; for Prism Launcher, MultiMC, \
 the Modrinth App or GDLauncher, prepare from the Horizon launcher, which finds their files. If your launcher keeps \
 them in another folder, pass --minecraft-dir or set HORIZON_MINECRAFT_DIR, or name the files with \
 --version-json, --client-jar, --libraries-dir and --assets-dir.";
-const SERVER_HINT: &str = "Horizon does not download the game: download the {version} server jar yourself (minecraft.net/download/server \
-while {version} is the current release, otherwise the downloads.server.url in your launcher's \
-versions/{version}/{version}.json), then pass --server-jar PATH or set HORIZON_SERVER_JAR.";
+const SERVER_HINT: &str = "The pinned server jar is not on this computer. Run horizon-prepare --download, \
+or pass --server-jar PATH (the downloads.server.url in versions/{version}/{version}.json).";
 
 fn hint(text: &str, version: &str) -> String {
     text.replace("{version}", version)

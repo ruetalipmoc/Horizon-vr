@@ -5,6 +5,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+mod fetch_game;
 mod vr_pack;
 
 /// This release's version: release.yml builds it with `HORIZON_VERSION` from the tag
@@ -17,7 +18,7 @@ const VERSION: &str = match option_env!("HORIZON_VERSION") {
 const HELP: &str = "\
 horizon-prepare: prepare Horizon's resources from your own Minecraft Java Edition
 
-Usage: horizon-prepare [--prepare] [--server-jar PATH] [--minecraft-dir PATH] [--root PATH] [--output PATH]
+Usage: horizon-prepare [--prepare] [--download] [--server-jar PATH] [--minecraft-dir PATH] [--root PATH] [--output PATH]
                        [--version-json PATH] [--client-jar PATH] [--libraries-dir PATH] [--assets-dir PATH]
                        [--java-home PATH] [--complete] [--progress json]
        horizon-prepare --check [--root PATH] [--output PATH]
@@ -30,6 +31,9 @@ Usage: horizon-prepare [--prepare] [--server-jar PATH] [--minecraft-dir PATH] [-
        horizon-prepare languages [--minecraft-dir PATH] [--version-json PATH] [--assets-dir PATH] [--root PATH] [--output PATH]
 
   --prepare             Import the pinned game files from your own copy first
+  --download            Download the pinned version from Mojang into <root>/.local/mojang
+                        (client, server, libraries, assets; each file checked by sha1),
+                        then prepare and copy the sounds. Nothing is committed.
   --server-jar PATH     The pinned server jar you downloaded yourself
                         (default: HORIZON_SERVER_JAR, or the copy imported before)
   --minecraft-dir PATH  The official launcher's game directory with your installed copy
@@ -179,6 +183,7 @@ fn main() -> ExitCode {
     let mut complete = false;
     let mut json = false;
     let mut launch_api = false;
+    let mut download = false;
     let mut args = std::env::args_os().skip(1).peekable();
     let assets = args.next_if(|a| {
         matches!(
@@ -209,6 +214,12 @@ fn main() -> ExitCode {
             }
             "--prepare" if inline.is_none() => {
                 options.import = true;
+                Ok(())
+            }
+            "--download" if inline.is_none() => {
+                download = true;
+                options.import = true;
+                complete = true;
                 Ok(())
             }
             "--server-jar" => value("--server-jar").map(|v| options.server_jar = Some(v)),
@@ -279,8 +290,8 @@ fn main() -> ExitCode {
         };
     }
     if check {
-        if options.import || options.server_jar.is_some() {
-            eprintln!("horizon-prepare: error: --check prepares nothing; leave out --prepare and --server-jar");
+        if options.import || options.server_jar.is_some() || download {
+            eprintln!("horizon-prepare: error: --check prepares nothing; leave out --prepare, --download and --server-jar");
             return ExitCode::from(2);
         }
         if json || complete {
@@ -305,6 +316,25 @@ fn main() -> ExitCode {
             print(&fraction_line(fraction * scale));
         }
     };
+    if download {
+        if assets.is_some() {
+            eprintln!("horizon-prepare: error: --download prepares the game; leave it off for asset commands");
+            return ExitCode::from(2);
+        }
+        match fetch_game::fetch(&options.root, &log) {
+            Ok(fetched) => {
+                options.minecraft_dir = Some(fetched.minecraft_dir);
+                options.server_jar = Some(fetched.server_jar);
+            }
+            Err(e) => {
+                if json {
+                    print(&json_line("error", &e));
+                }
+                eprintln!("error: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
     let result = match assets.as_deref().and_then(|a| a.to_str()) {
         Some("compile-exporters") => horizon_prepare::compile_exporters(&options, &log)
             .inspect(|dir| log(&dir.display().to_string())),
