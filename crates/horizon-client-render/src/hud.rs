@@ -113,6 +113,123 @@ pub const GLYPH_ROWS: u32 = 512;
 /// The largest atlas side: the 2D texture limit of the GPUs Horizon runs on
 /// (Apple silicon, RADV and Intel allow 16384; NVIDIA 32768).
 pub const MAX_ATLAS_SIZE: u32 = 16384;
+
+/// Shrink an RGBA8 atlas so neither side exceeds `limit`. `None` when it
+/// already fits. The image is resampled; normalized UVs stay valid because
+/// every sprite keeps its fraction of the atlas. Run-time patches are still
+/// addressed in the original pixels and scaled on upload.
+pub(crate) fn fit_shared_atlas(
+    pixels: &[u8],
+    width: u32,
+    height: u32,
+    limit: u32,
+) -> Option<(Vec<u8>, u32, u32)> {
+    if width == 0 || height == 0 || limit == 0 || (width <= limit && height <= limit) {
+        return None;
+    }
+    if pixels.len() < (width as usize) * (height as usize) * 4 {
+        return None;
+    }
+    let longest = width.max(height);
+    let nw = (u64::from(width) * u64::from(limit) / u64::from(longest)).max(1) as u32;
+    let nh = (u64::from(height) * u64::from(limit) / u64::from(longest)).max(1) as u32;
+    let (nw, nh) = (nw.min(limit), nh.min(limit));
+    Some((resample_rgba(pixels, width, height, nw, nh), nw, nh))
+}
+
+/// The GPU rectangle of a patch addressed in the original atlas, and its
+/// texels resampled to that rectangle. `None` when the sizes already match
+/// or the patch does not land on the texture.
+pub(crate) fn scale_atlas_patch(
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+    rgba: &[u8],
+    logical: (u32, u32),
+    gpu: (u32, u32),
+) -> Option<(u32, u32, u32, u32, Vec<u8>)> {
+    let (lw, lh) = logical;
+    let (gw, gh) = gpu;
+    if lw == 0 || lh == 0 || gw == 0 || gh == 0 || width == 0 || height == 0 {
+        return None;
+    }
+    if rgba.len() < (width as usize) * (height as usize) * 4 {
+        return None;
+    }
+    if (lw, lh) == (gw, gh) {
+        return None;
+    }
+    let map = |v: u32, from: u32, to: u32| (u64::from(v) * u64::from(to) / u64::from(from)) as u32;
+    let x0 = map(x, lw, gw).min(gw.saturating_sub(1));
+    let y0 = map(y, lh, gh).min(gh.saturating_sub(1));
+    let x1 = map(x.saturating_add(width), lw, gw).clamp(x0 + 1, gw);
+    let y1 = map(y.saturating_add(height), lh, gh).clamp(y0 + 1, gh);
+    let (dw, dh) = (x1 - x0, y1 - y0);
+    Some((x0, y0, dw, dh, resample_rgba(rgba, width, height, dw, dh)))
+}
+
+fn resample_rgba(pixels: &[u8], width: u32, height: u32, nw: u32, nh: u32) -> Vec<u8> {
+    let mut out = vec![0u8; (nw as usize) * (nh as usize) * 4];
+    for y in 0..nh {
+        let sy = (f64::from(y) + 0.5) * f64::from(height) / f64::from(nh) - 0.5;
+        let y0 = sy.floor().clamp(0.0, f64::from(height - 1)) as u32;
+        let y1 = (y0 + 1).min(height - 1);
+        let fy = (sy - f64::from(y0)).clamp(0.0, 1.0) as f32;
+        for x in 0..nw {
+            let sx = (f64::from(x) + 0.5) * f64::from(width) / f64::from(nw) - 0.5;
+            let x0 = sx.floor().clamp(0.0, f64::from(width - 1)) as u32;
+            let x1 = (x0 + 1).min(width - 1);
+            let fx = (sx - f64::from(x0)).clamp(0.0, 1.0) as f32;
+            let at = |xx: u32, yy: u32| {
+                let i = ((yy * width + xx) * 4) as usize;
+                [pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]]
+            };
+            let mix = |a: f32, b: f32, t: f32| a + (b - a) * t;
+            let row = |a: [u8; 4], b: [u8; 4]| {
+                [
+                    mix(f32::from(a[0]), f32::from(b[0]), fx),
+                    mix(f32::from(a[1]), f32::from(b[1]), fx),
+                    mix(f32::from(a[2]), f32::from(b[2]), fx),
+                    mix(f32::from(a[3]), f32::from(b[3]), fx),
+                ]
+            };
+            let top = row(at(x0, y0), at(x1, y0));
+            let bot = row(at(x0, y1), at(x1, y1));
+            let o = ((y * nw + x) * 4) as usize;
+            for c in 0..4 {
+                out[o + c] = mix(top[c], bot[c], fy).round().clamp(0.0, 255.0) as u8;
+            }
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod atlas_fit {
+    use super::{fit_shared_atlas, scale_atlas_patch};
+
+    #[test]
+    fn an_atlas_taller_than_the_gpu_shrinks_to_the_limit() {
+        let pixels = vec![255u8; 4 * 4 * 6];
+        let (out, w, h) = fit_shared_atlas(&pixels, 4, 6, 4).unwrap();
+        assert!(w <= 4 && h <= 4, "{w}x{h}");
+        assert_eq!(out.len(), (w * h * 4) as usize);
+        assert!(out.iter().all(|&p| p == 255));
+        assert!(fit_shared_atlas(&pixels, 4, 4, 4).is_none());
+    }
+
+    #[test]
+    fn a_patch_keeps_its_place_in_the_smaller_atlas() {
+        let rgba = vec![7u8; 2 * 2 * 4];
+        let (x, y, w, h, texels) =
+            scale_atlas_patch(0, 4, 2, 2, &rgba, (4, 6), (2, 4)).unwrap();
+        assert!(x + w <= 2 && y + h <= 4, "{x},{y} {w}x{h}");
+        assert_eq!(texels.len(), (w * h * 4) as usize);
+        assert!(scale_atlas_patch(0, 0, 2, 2, &rgba, (4, 6), (4, 6)).is_none());
+    }
+}
+
 /// 128x128 atlas slots for map textures. A lobby paints its signs as walls of
 /// framed maps, so the pool holds a wall; too few slots re-upload every map
 /// every frame. 26.3's `MapTextureManager` keeps a texture per map instead.
@@ -2375,6 +2492,9 @@ pub struct HudRenderer {
     /// Target pixels per window pixel: above 1 for a screenshot drawn larger than the
     /// window (`Renderer::screenshot_quality`).
     pub zoom: f32,
+    /// Pixel size patches are addressed in. The texture is this size, or smaller
+    /// when the GPU cannot hold it (`fit_shared_atlas`); uploads scale to match.
+    pub logical_atlas: (u32, u32),
 }
 impl HudRenderer {
     pub fn new(
@@ -2623,6 +2743,7 @@ impl HudRenderer {
             atlas_view: view.clone(),
             pack_text: None,
             zoom: 1.0,
+            logical_atlas: (0, 0),
         })
     }
     /// Draw the CIT glint layers of `textures` (the pack's enchantment rules); `None` or no
@@ -2708,7 +2829,34 @@ impl HudRenderer {
         patches: &[crate::font::Patch],
     ) {
         if let Some(texture) = &self.atlas_texture {
+            let gpu = (texture.width(), texture.height());
             for p in patches {
+                if self.logical_atlas.0 > 0 && self.logical_atlas != gpu {
+                    let Some((x, y, w, h, rgba)) = scale_atlas_patch(
+                        p.x,
+                        p.y,
+                        p.width,
+                        p.height,
+                        &p.rgba,
+                        self.logical_atlas,
+                        gpu,
+                    ) else {
+                        continue;
+                    };
+                    uploads.texture(
+                        encoder,
+                        wgpu::TexelCopyTextureInfo {
+                            texture,
+                            mip_level: 0,
+                            origin: wgpu::Origin3d { x, y, z: 0 },
+                            aspect: wgpu::TextureAspect::All,
+                        },
+                        w,
+                        h,
+                        &rgba,
+                    );
+                    continue;
+                }
                 if p.x.saturating_add(p.width) <= texture.width()
                     && p.y.saturating_add(p.height) <= texture.height()
                 {

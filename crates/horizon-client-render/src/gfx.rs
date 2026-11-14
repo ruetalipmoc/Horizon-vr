@@ -3470,14 +3470,21 @@ impl Renderer {
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let (atlas_pixels, atlas_width, atlas_height) = hud_atlas;
-        let limit = device.limits().max_texture_dimension_2d;
-        if atlas_width.max(atlas_height) > limit {
-            return Err(format!(
-                "the shared atlas is {atlas_width}x{atlas_height}; this GPU allows {limit}x{limit}"
-            )
-            .into());
+        let (atlas_pixels, logical_width, logical_height) = hud_atlas;
+        let limit = device.limits().max_texture_dimension_2d.max(1);
+        // A Pi 500's VideoCore VII stops at 4096. The default shared atlas is
+        // 4096x6144, which wgpu refuses. Draw it smaller; UVs are fractions.
+        let fitted =
+            crate::hud::fit_shared_atlas(atlas_pixels, logical_width, logical_height, limit);
+        if let Some((_, width, height)) = &fitted {
+            log::warn!(
+                "Horizon: the shared atlas is {logical_width}x{logical_height}; this GPU allows {limit}x{limit}, so it is drawn at {width}x{height}"
+            );
         }
+        let (atlas_pixels, atlas_width, atlas_height) = match &fitted {
+            Some((pixels, width, height)) => (pixels.as_slice(), *width, *height),
+            None => (atlas_pixels, logical_width, logical_height),
+        };
         let atlas = device.create_texture_with_data(
             &queue,
             &wgpu::TextureDescriptor {
@@ -3564,6 +3571,7 @@ impl Renderer {
             &glint_sampler,
         )?;
         hud.atlas_texture = Some(atlas.clone());
+        hud.logical_atlas = (logical_width, logical_height);
         let entity_step = crate::spans::startup::step("renderer.entity_pipelines");
         let entity_shader = kept.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Horizon entities"),
