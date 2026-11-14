@@ -18532,7 +18532,7 @@ impl ApplicationHandler for Game<'_> {
         let window_step = startup::step("window.create");
         let window = match event_loop.create_window(
             attributes
-                .with_inner_size(winit::dpi::LogicalSize::new(size[0], size[1]))
+                .with_inner_size(startup_window_size(event_loop, fullscreen, size))
                 .with_fullscreen(fullscreen.then_some(winit::window::Fullscreen::Borderless(None)))
                 .with_visible(!self.options.offscreen),
         ) {
@@ -22793,6 +22793,23 @@ fn write_report(game: &Game<'_>) -> Result<()> {
     Ok(())
 }
 
+/// A fullscreen window opens at the monitor's size. 1280x720 inside Sway's
+/// fullscreen is drawn in the middle, with black bars around it.
+fn startup_window_size(
+    event_loop: &ActiveEventLoop,
+    fullscreen: bool,
+    fallback: [f64; 2],
+) -> winit::dpi::Size {
+    if fullscreen
+        && let Some(monitor) = event_loop
+            .primary_monitor()
+            .or_else(|| event_loop.available_monitors().next())
+    {
+        return winit::dpi::Size::Physical(monitor.size());
+    }
+    winit::dpi::Size::Logical(winit::dpi::LogicalSize::new(fallback[0], fallback[1]))
+}
+
 /// The event loop; on Android it needs the activity `android_main` was given.
 fn new_event_loop() -> std::result::Result<EventLoop<()>, winit::error::EventLoopError> {
     #[cfg(target_os = "android")]
@@ -22936,7 +22953,7 @@ impl Loading {
         let window_step = startup::step("window.create");
         let window = match event_loop.create_window(
             attributes
-                .with_inner_size(winit::dpi::LogicalSize::new(size[0], size[1]))
+                .with_inner_size(startup_window_size(event_loop, fullscreen, size))
                 .with_fullscreen(fullscreen.then_some(winit::window::Fullscreen::Borderless(None)))
                 .with_visible(!self.options.as_ref().is_some_and(|o| o.offscreen)),
         ) {
@@ -23566,6 +23583,12 @@ pub fn run_with() -> Result<()> {
             log::warn!(
                 "Detected unexpected shutdown during last game startup: resetting fullscreen mode"
             );
+        }
+        // `--fullscreen` (and ROCKNIX, which sets it) has to win over options.txt.
+        // The menu applies the saved option on the first resize and would leave
+        // the window at 1280x720 inside Sway's fullscreen, which is the black bars.
+        if options.fullscreen {
+            early_settings.fullscreen = true;
         }
         early_settings.file.set(
             "startedCleanly",
