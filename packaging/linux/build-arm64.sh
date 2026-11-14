@@ -234,9 +234,9 @@ if [[ ! -f "$bin" ]]; then
 fi
 echo
 echo "Built $bin"
-echo "Copy this file and .local/horizon-client/26.3 to the device."
-echo "On the device, from a Wayland session:"
-echo "  HORIZON_XR=0 ./horizon-client --resources /path/to/horizon-client/26.3"
+echo "Pack it with the prepared resources:"
+echo "  packaging/linux/pack-arm64.sh --binary $bin"
+echo "The archive extracts to a folder whose horizon-client finds resources/ beside it."
 if [[ "$NO_DEFAULT" -eq 1 ]]; then
   echo "This binary has no sound and no gamepads (--no-default-features)."
 fi

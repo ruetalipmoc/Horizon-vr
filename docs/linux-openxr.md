@@ -53,6 +53,14 @@ packaging/linux/build-arm64.sh --debian bullseye --sysroot "$HOME/arm64-sysroot-
 packaging/linux/build-arm64.sh --no-default-features   # no sound, no gamepads, no sysroot
 ```
 
+[`packaging/linux/pack-arm64.sh`](../packaging/linux/pack-arm64.sh) puts that binary and
+`.local/horizon-client/26.3` into `target/pack/horizon-linux-aarch64.zip`. Extract
+it on the device and run `./horizon-client`: the `resources/` directory beside the
+binary is what the client loads. Saves stay in `$HORIZON_HOME` or
+`~/.local/share/horizon`. `--appimage` also writes an AppImage; a Pi or ROCKNIX
+box should use the zip, because those systems have no FUSE and the image would
+unpack on every launch. Vulkan and ALSA stay the device's.
+
 Eye resolution is the runtime's recommended size. `HORIZON_XR_SCALE` (0.4..1.4)
 changes that share. On Quest the default scale stays 0.7.
 
