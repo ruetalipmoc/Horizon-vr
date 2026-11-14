@@ -893,9 +893,26 @@ impl Options {
                 }
             }
         }
+        if !o.fullscreen {
+            o.fullscreen = rocknix_fullscreen();
+        }
         Ok(Some(o))
     }
 }
+
+/// ROCKNIX runs sway, which tiles a new window beside the file manager or the
+/// terminal that started it, so the handheld shows the game on one half.
+/// Borderless fullscreen covers that split. A desktop sway session has no
+/// `/storage/roms` and is left windowed. `HORIZON_FULLSCREEN=0` keeps the window.
+fn rocknix_fullscreen() -> bool {
+    match std::env::var("HORIZON_FULLSCREEN").as_deref() {
+        Ok("0") | Ok("false") | Ok("off") => return false,
+        Ok(_) => return true,
+        Err(_) => {}
+    }
+    std::env::var_os("SWAYSOCK").is_some() && std::path::Path::new("/storage/roms").is_dir()
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Screen {
     Playing,

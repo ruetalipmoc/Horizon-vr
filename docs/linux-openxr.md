@@ -61,6 +61,15 @@ binary is what the client loads. Saves stay in `$HORIZON_HOME` or
 box should use the zip, because those systems have no FUSE and the image would
 unpack on every launch. Vulkan and ALSA stay the device's.
 
+ROCKNIX Ports lists only the `.sh` files in `roms/ports`. An entry added by hand
+to `gamelist.xml` does not create one. Link the archive's `Horizon.sh` into that
+folder (`ln -s` the copy that sits next to `horizon-client`), `chmod +x` it, then
+START → Game Settings → Update Gamelist. Sway tiles a normal window beside the
+program that launched it, which is the split screen with the terminal on the
+left. `Horizon.sh` starts the client fullscreen; on a rebuild the client does
+that itself when `SWAYSOCK` is set and `/storage/roms` exists.
+`HORIZON_FULLSCREEN=0` keeps the window.
+
 Eye resolution is the runtime's recommended size. `HORIZON_XR_SCALE` (0.4..1.4)
 changes that share. On Quest the default scale stays 0.7.
 

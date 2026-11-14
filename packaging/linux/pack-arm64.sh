@@ -87,9 +87,10 @@ fi
 
 mkdir -p "$OUT"
 zip_path="$OUT/$NAME.zip"
-python3 - "$BINARY" "$RESOURCES" "$zip_path" "$NAME" <<'PY'
+port_script="$(cd "$(dirname "$0")" && pwd)/Horizon.sh"
+python3 - "$BINARY" "$RESOURCES" "$zip_path" "$NAME" "$port_script" <<'PY'
 import os, sys, zipfile
-binary, resources, dest, name = sys.argv[1:]
+binary, resources, dest, name, port_script = sys.argv[1:]
 with open(binary, "rb") as fh:
     ident = fh.read(20)
 if ident[:4] != b"\x7fELF" or int.from_bytes(ident[18:20], "little") != 183:
@@ -107,6 +108,11 @@ On Raspberry Pi OS install mesa-vulkan-drivers. Do not copy Vulkan or ALSA
 from the PC that built this archive.
 
 HORIZON_XR=0 keeps a flat window when an OpenXR runtime is installed.
+
+On ROCKNIX, Ports only lists the .sh files in roms/ports. A gamelist.xml entry
+is not enough. Link Horizon.sh into that folder and update the gamelist from
+the START menu. The script also asks Sway for a fullscreen window: without it
+the compositor splits the screen and the terminal stays on the left.
 """
 
 os.makedirs(os.path.dirname(os.path.abspath(dest)), exist_ok=True)
@@ -123,6 +129,8 @@ with zipfile.ZipFile(dest, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=
                 sys.exit(f"refusing to pack a symlink: {path}")
             rel = os.path.relpath(path, resources)
             z.write(path, f"{name}/resources/{rel}")
+    if port_script and os.path.isfile(port_script):
+        z.write(port_script, f"{name}/Horizon.sh")
 print(dest)
 PY
 
